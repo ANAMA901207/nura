@@ -20,13 +20,11 @@ typing-extensions==4.15.0
 
 # Hashing de contraseñas
 bcrypt==5.0.0
-bcrypt
-duckduckgo-search
 
 # Generación de imágenes (favicon, diagramas)
 Pillow==12.0.0
 
-# Búsqueda web desde el agente tutor
+# Búsqueda web desde el agente tutor (módulo: ddgs)
 duckduckgo-search==8.1.1
 
 # Conector PostgreSQL para Supabase (Sprint 22)
