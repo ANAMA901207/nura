@@ -1,20 +1,44 @@
 """
 db/schema.py
 ============
-Configuración de la conexión SQLite e inicialización del esquema de tablas.
+Configuración de la conexión e inicialización del esquema de tablas.
 
-Este módulo es el único punto de contacto con el archivo físico de la base
-de datos.  Todas las funciones en operations.py llaman a get_connection()
-para obtener una conexión; nunca abren el archivo directamente.
+Sprint 22: modo dual — usa PostgreSQL si DATABASE_URL está en el entorno,
+o SQLite local si no lo está.  La interfaz pública es idéntica para ambos
+motores; el código cliente en operations.py no necesita distinguir entre
+ambos backends salvo para los placeholders (gestionados por _NuraConn).
+
+Regla de selección de motor
+----------------------------
+    DATABASE_URL en entorno → PostgreSQL (Supabase o cualquier instancia PG)
+    sin DATABASE_URL         → SQLite (archivo db/nura.db, por defecto en tests)
 """
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
+from typing import Any
 
-# Columnas añadidas en sprints anteriores.  Se migran automáticamente en init_db()
-# para bases de datos existentes creadas antes de estas versiones.
+# ── Carga opcional del .env para detectar DATABASE_URL ───────────────────────
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # python-dotenv es opcional en entornos CI sin archivo .env
+
+# ── Importación opcional de psycopg2 ─────────────────────────────────────────
+try:
+    import psycopg2
+    import psycopg2.extras
+    import psycopg2.errorcodes
+    _PSYCOPG2_AVAILABLE = True
+except ImportError:
+    _PSYCOPG2_AVAILABLE = False
+
+# ── Columnas de migraciones por sprint ───────────────────────────────────────
+
 _SPRINT5_MIGRATIONS = [
     ("is_classified", "INTEGER NOT NULL DEFAULT 0"),
     ("user_context",  "TEXT    NOT NULL DEFAULT ''"),
@@ -24,19 +48,14 @@ _SPRINT7_MIGRATIONS = [
     ("consecutive_correct",   "INTEGER NOT NULL DEFAULT 0"),
     ("consecutive_incorrect",  "INTEGER NOT NULL DEFAULT 0"),
     ("total_reviews",          "INTEGER NOT NULL DEFAULT 0"),
-    ("next_review",            "TEXT"),   # nullable ISO 8601, NULL = sin programar
+    ("next_review",            "TEXT"),
 ]
 
-# Columnas del algoritmo SM-2 añadidas en Sprint 8.
 _SPRINT8_MIGRATIONS = [
-    ("sm2_interval", "REAL NOT NULL DEFAULT 1.0"),  # días hasta próximo repaso (float)
-    ("sm2_ef",       "REAL NOT NULL DEFAULT 2.5"),  # Easiness Factor; mínimo 1.3
+    ("sm2_interval", "REAL NOT NULL DEFAULT 1.0"),
+    ("sm2_ef",       "REAL NOT NULL DEFAULT 2.5"),
 ]
 
-# Sprint 11: columna user_id en las tres tablas de datos para aislar datos por usuario.
-# DEFAULT 0 reserva el user_id=0 como "legacy" — ningún usuario real tendrá ese ID
-# porque SQLite AUTOINCREMENT comienza en 1.  Esto evita que el primer usuario
-# registrado (id=1) vea datos históricos de antes de la migración multi-usuario.
 _SPRINT11_CONCEPT_MIGRATIONS = [
     ("user_id", "INTEGER NOT NULL DEFAULT 0"),
 ]
@@ -47,69 +66,217 @@ _SPRINT11_SUMMARY_MIGRATIONS = [
     ("user_id", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
-# Sprint 15: campos de perfil de onboarding en la tabla users.
-# DEFAULT '' garantiza que usuarios existentes no rompan al leer la columna.
 _SPRINT15_USER_MIGRATIONS = [
     ("profession",    "TEXT NOT NULL DEFAULT ''"),
     ("learning_area", "TEXT NOT NULL DEFAULT ''"),
     ("tech_level",    "TEXT NOT NULL DEFAULT ''"),
 ]
 
-# Ruta al archivo de la base de datos, ubicado en la misma carpeta que este módulo.
-# Se puede sobreescribir desde los tests para usar una BD temporal aislada.
+# Ruta al archivo SQLite.  Sobreescribible desde tests para usar BDs temporales.
 DB_PATH: Path = Path(__file__).parent / "nura.db"
 
 
-def get_connection() -> sqlite3.Connection:
+# ── Detección del motor activo ────────────────────────────────────────────────
+
+def get_db_mode() -> str:
     """
-    Abre y devuelve una conexión activa a la base de datos SQLite.
+    Retorna el motor de base de datos activo.
 
-    Configuraciones aplicadas en cada conexión:
-    - PRAGMA foreign_keys = ON  → activa el cumplimiento de claves foráneas,
-      que SQLite desactiva por defecto por compatibilidad histórica.
-    - row_factory = sqlite3.Row  → hace que cada fila devuelta sea accesible
-      tanto por índice numérico como por nombre de columna (row["term"]).
-
-    La conexión se usa con el context manager `with` en operations.py,
-    lo que garantiza commit automático al salir del bloque sin errores
-    y rollback si ocurre una excepción.
+    Devuelve
+    --------
+    'postgresql' si DATABASE_URL está definida en el entorno, 'sqlite' si no.
     """
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.row_factory = sqlite3.Row
-    return conn
+    return "postgresql" if os.environ.get("DATABASE_URL") else "sqlite"
 
+
+# ── Cursor wrapper para psycopg2 ──────────────────────────────────────────────
+
+class _PGCursor:
+    """
+    Envuelve un cursor de psycopg2 con la interfaz de cursor de sqlite3.
+
+    Añade la propiedad `lastrowid` que sqlite3 expone nativamente pero que
+    psycopg2 no tiene (se puebla cuando _NuraConn.execute() detecta un INSERT).
+    Las filas se exponen como dict-like gracias a RealDictCursor subyacente.
+    """
+
+    def __init__(self, cursor: Any, lastrowid: int | None = None) -> None:
+        self._cur = cursor
+        self._lastrowid = lastrowid
+
+    # ── sqlite3 API parity ────────────────────────────────────────────────────
+
+    @property
+    def lastrowid(self) -> int | None:
+        return self._lastrowid
+
+    def fetchone(self) -> Any:
+        return self._cur.fetchone()
+
+    def fetchall(self) -> list[Any]:
+        return self._cur.fetchall()
+
+    @property
+    def rowcount(self) -> int:
+        return self._cur.rowcount
+
+
+# ── Conexión unificada ────────────────────────────────────────────────────────
+
+class _NuraConn:
+    """
+    Conexión unificada que abstrae SQLite y PostgreSQL con la misma interfaz.
+
+    Características
+    ---------------
+    - execute(sql, params): adapta placeholders '?' → '%s' en PostgreSQL y
+      devuelve un cursor compatible con sqlite3 (con .lastrowid, .fetchone,
+      .fetchall, .rowcount).
+    - En INSERT statements (PostgreSQL), agrega automáticamente 'RETURNING id'
+      para poblar cursor.lastrowid sin cambiar el código de operations.py.
+    - Los errores de integridad de psycopg2 se re-lanzan como
+      sqlite3.IntegrityError para que operations.py use un solo tipo de excepción.
+    - Funciona como context manager: commit al salir sin error, rollback si hay
+      excepción, cierra la conexión al finalizar.
+    """
+
+    def __init__(self) -> None:
+        self._mode = get_db_mode()
+        if self._mode == "postgresql":
+            if not _PSYCOPG2_AVAILABLE:
+                raise ImportError(
+                    "psycopg2 no está instalado. "
+                    "Ejecuta: pip install psycopg2-binary"
+                )
+            url = os.environ.get("DATABASE_URL", "")
+            self._raw = psycopg2.connect(
+                url,
+                cursor_factory=psycopg2.extras.RealDictCursor,
+            )
+        else:
+            self._raw = sqlite3.connect(str(DB_PATH))
+            self._raw.execute("PRAGMA foreign_keys = ON")
+            self._raw.row_factory = sqlite3.Row
+
+    # ── Ejecución unificada ───────────────────────────────────────────────────
+
+    def execute(self, sql: str, params: tuple | list = ()) -> Any:
+        """
+        Ejecuta una sentencia SQL con manejo automático de placeholders.
+
+        Para PostgreSQL:
+        - Convierte '?' a '%s'.
+        - En INSERT, agrega 'RETURNING id' y puebla cursor.lastrowid.
+        - Re-lanza IntegrityError de psycopg2 como sqlite3.IntegrityError.
+
+        Para SQLite:
+        - Delega directamente a conn.execute() (comportamiento original).
+        """
+        if self._mode == "postgresql":
+            return self._pg_execute(sql, params)
+        return self._raw.execute(sql, params)
+
+    def _pg_execute(self, sql: str, params: tuple | list = ()) -> _PGCursor:
+        adapted = sql.replace("?", "%s")
+        is_insert = adapted.strip().upper().startswith("INSERT")
+        needs_returning = is_insert and "RETURNING" not in adapted.upper()
+
+        if needs_returning:
+            adapted = adapted.rstrip().rstrip(";") + " RETURNING id"
+
+        cur = self._raw.cursor()
+        try:
+            cur.execute(adapted, params if params else None)
+        except Exception as e:
+            if _PSYCOPG2_AVAILABLE and isinstance(e, psycopg2.IntegrityError):
+                raise sqlite3.IntegrityError(str(e)) from e
+            raise
+
+        lastrowid = None
+        if needs_returning:
+            row = cur.fetchone()
+            lastrowid = row["id"] if row else None
+
+        return _PGCursor(cur, lastrowid=lastrowid)
+
+    # ── Context manager ───────────────────────────────────────────────────────
+
+    def __enter__(self) -> "_NuraConn":
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> bool:
+        try:
+            if exc_type is None:
+                self._raw.commit()
+            else:
+                self._raw.rollback()
+        except Exception:
+            pass
+        try:
+            self._raw.close()
+        except Exception:
+            pass
+        return False
+
+    # ── Compatibilidad con código heredado (SQLite) ───────────────────────────
+
+    def executescript(self, sql: str) -> None:
+        """Ejecuta un script SQL multi-sentencia.  Solo para SQLite."""
+        if self._mode == "sqlite":
+            self._raw.executescript(sql)
+
+    def commit(self) -> None:
+        self._raw.commit()
+
+    def rollback(self) -> None:
+        self._raw.rollback()
+
+    def close(self) -> None:
+        self._raw.close()
+
+
+# ── API pública ───────────────────────────────────────────────────────────────
+
+def get_connection() -> _NuraConn:
+    """
+    Abre y devuelve una conexión activa al motor de BD configurado.
+
+    Modo SQLite (sin DATABASE_URL)
+    ------------------------------
+    - Conecta al archivo DB_PATH.
+    - Activa PRAGMA foreign_keys = ON.
+    - Usa row_factory = sqlite3.Row para acceso por nombre de columna.
+
+    Modo PostgreSQL (con DATABASE_URL)
+    -----------------------------------
+    - Conecta a la URL de Supabase/PostgreSQL.
+    - Usa RealDictCursor para acceso dict-like compatible con sqlite3.Row.
+
+    Úsala con el context manager `with`:
+        with get_connection() as conn:
+            conn.execute(...)
+    """
+    return _NuraConn()
+
+
+# ── Inicialización del esquema ────────────────────────────────────────────────
 
 def init_db() -> None:
     """
-    Crea las tablas de la base de datos si aún no existen.
+    Crea las tablas de la base de datos si aún no existen (idempotente).
 
-    Segura para llamarse varias veces (idempotente) gracias al uso de
-    CREATE TABLE IF NOT EXISTS.  Debe invocarse una vez al arrancar la
-    aplicación antes de cualquier operación de lectura o escritura.
-
-    Tablas creadas
-    --------------
-    users
-        Cuentas de usuario.  password_hash almacena el hash bcrypt.
-
-    concepts
-        Almacena los conceptos de aprendizaje.
-        - UNIQUE(term, user_id): cada usuario tiene su propio espacio de
-          términos; distintos usuarios pueden aprender el mismo concepto
-          sin conflicto.
-        - user_id identifica al propietario y todas las queries filtran por él.
-        - mastery_level tiene un CHECK que garantiza valores entre 0 y 5.
-
-    connections
-        Almacena los vínculos entre pares de conceptos.
-        - concept_id_a y concept_id_b son FK a concepts(id).
-        - ON DELETE CASCADE: si se borra un concepto, sus conexiones desaparecen.
-
-    daily_summaries
-        Almacena un resumen de actividad por fecha.
-        - (date, user_id) es UNIQUE: un resumen por usuario por día.
+    Selecciona el DDL apropiado según el motor activo y luego aplica las
+    migraciones incrementales para bases de datos existentes.
     """
+    if get_db_mode() == "postgresql":
+        _init_db_postgresql()
+    else:
+        _init_db_sqlite()
+    _run_migrations()
+
+
+def _init_db_sqlite() -> None:
+    """Inicializa el esquema en SQLite usando executescript."""
     with get_connection() as conn:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS users (
@@ -166,16 +333,169 @@ def init_db() -> None:
             );
         """)
 
-    # Las migraciones ALTER TABLE deben ejecutarse ANTES de crear los índices
-    # que referencian user_id.  En BDs existentes (sprints anteriores) la columna
-    # user_id aún no existe; crearla aquí garantiza que los CREATE INDEX
-    # del bloque siguiente siempre encuentren la columna.
-    _run_migrations()
 
+def _init_db_postgresql() -> None:
+    """
+    Inicializa el esquema en PostgreSQL.
+
+    Diferencias respecto al DDL SQLite:
+    - SERIAL PRIMARY KEY en lugar de INTEGER PRIMARY KEY AUTOINCREMENT.
+    - FLOAT en lugar de REAL (ambos son float8 en PG; REAL es alias de float4).
+    - Los campos de perfil (Sprint 15) se incluyen directamente en el CREATE
+      TABLE de users, no como migración posterior.
+    - Se crean los índices de rendimiento aquí también.
+    """
+    url = os.environ.get("DATABASE_URL", "")
+    raw = psycopg2.connect(url)
+    try:
+        with raw.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id            SERIAL PRIMARY KEY,
+                    username      TEXT NOT NULL UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    created_at    TEXT NOT NULL,
+                    profession    TEXT NOT NULL DEFAULT '',
+                    learning_area TEXT NOT NULL DEFAULT '',
+                    tech_level    TEXT NOT NULL DEFAULT ''
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS concepts (
+                    id               SERIAL PRIMARY KEY,
+                    term             TEXT NOT NULL,
+                    category         TEXT NOT NULL DEFAULT '',
+                    subcategory      TEXT NOT NULL DEFAULT '',
+                    explanation      TEXT NOT NULL DEFAULT '',
+                    examples         TEXT NOT NULL DEFAULT '',
+                    analogy          TEXT NOT NULL DEFAULT '',
+                    context          TEXT NOT NULL DEFAULT '',
+                    flashcard_front  TEXT NOT NULL DEFAULT '',
+                    flashcard_back   TEXT NOT NULL DEFAULT '',
+                    mastery_level    INTEGER NOT NULL DEFAULT 0
+                                             CHECK (mastery_level BETWEEN 0 AND 5),
+                    created_at       TEXT NOT NULL,
+                    last_reviewed         TEXT,
+                    is_classified         INTEGER NOT NULL DEFAULT 0,
+                    user_context          TEXT NOT NULL DEFAULT '',
+                    consecutive_correct   INTEGER NOT NULL DEFAULT 0,
+                    consecutive_incorrect INTEGER NOT NULL DEFAULT 0,
+                    total_reviews         INTEGER NOT NULL DEFAULT 0,
+                    next_review           TEXT,
+                    sm2_interval          FLOAT NOT NULL DEFAULT 1.0,
+                    sm2_ef                FLOAT NOT NULL DEFAULT 2.5,
+                    user_id               INTEGER NOT NULL DEFAULT 0,
+                    UNIQUE(term, user_id)
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS connections (
+                    id            SERIAL PRIMARY KEY,
+                    concept_id_a  INTEGER NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+                    concept_id_b  INTEGER NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+                    relationship  TEXT NOT NULL DEFAULT '',
+                    created_at    TEXT NOT NULL,
+                    user_id       INTEGER NOT NULL DEFAULT 1
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS daily_summaries (
+                    id                SERIAL PRIMARY KEY,
+                    date              TEXT NOT NULL,
+                    concepts_captured INTEGER NOT NULL DEFAULT 0,
+                    new_connections   INTEGER NOT NULL DEFAULT 0,
+                    concepts_reviewed INTEGER NOT NULL DEFAULT 0,
+                    user_id           INTEGER NOT NULL DEFAULT 1,
+                    UNIQUE(date, user_id)
+                )
+            """)
+            # Índices de rendimiento
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_concepts_user_id ON concepts(user_id)"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_connections_user_id ON connections(user_id)"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_summaries_user_date "
+                "ON daily_summaries(user_id, date)"
+            )
+        raw.commit()
+    finally:
+        raw.close()
+
+
+# ── Migraciones incrementales ─────────────────────────────────────────────────
 
 def _run_migrations() -> None:
+    """Despacha las migraciones al motor correcto."""
+    if get_db_mode() == "postgresql":
+        _run_migrations_postgresql()
+    else:
+        _run_migrations_sqlite()
+
+
+def _run_migrations_postgresql() -> None:
     """
-    Aplica migraciones de esquema incrementales de forma idempotente.
+    Aplica migraciones en PostgreSQL usando ADD COLUMN IF NOT EXISTS (PG 9.6+).
+
+    Supabase ejecuta PostgreSQL 15, por lo que esta sintaxis siempre está
+    disponible.  No necesita recrear tablas como SQLite porque PostgreSQL
+    soporta modificación de constraints directamente.
+    """
+    url = os.environ.get("DATABASE_URL", "")
+    raw = psycopg2.connect(url)
+    try:
+        with raw.cursor() as cur:
+            all_concept_cols = (
+                _SPRINT5_MIGRATIONS
+                + _SPRINT7_MIGRATIONS
+                + _SPRINT8_MIGRATIONS
+                + _SPRINT11_CONCEPT_MIGRATIONS
+            )
+            for col, defn in all_concept_cols:
+                cur.execute(
+                    f"ALTER TABLE concepts ADD COLUMN IF NOT EXISTS {col} {defn}"
+                )
+            for col, defn in _SPRINT11_CONNECTION_MIGRATIONS:
+                cur.execute(
+                    f"ALTER TABLE connections ADD COLUMN IF NOT EXISTS {col} {defn}"
+                )
+            for col, defn in _SPRINT11_SUMMARY_MIGRATIONS:
+                cur.execute(
+                    f"ALTER TABLE daily_summaries ADD COLUMN IF NOT EXISTS {col} {defn}"
+                )
+            for col, defn in _SPRINT15_USER_MIGRATIONS:
+                cur.execute(
+                    f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {defn}"
+                )
+            # Índices (idempotentes por IF NOT EXISTS)
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_concepts_user_id ON concepts(user_id)"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_connections_user_id ON connections(user_id)"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_summaries_user_date "
+                "ON daily_summaries(user_id, date)"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS uq_daily_date_user "
+                "ON daily_summaries(date, user_id)"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS uq_concepts_term_user "
+                "ON concepts(term, user_id)"
+            )
+        raw.commit()
+    finally:
+        raw.close()
+
+
+def _run_migrations_sqlite() -> None:
+    """
+    Aplica migraciones de esquema incrementales en SQLite de forma idempotente.
 
     Cada entrada de los bloques _SPRINTn_MIGRATIONS intenta añadir una columna
     nueva a la tabla correspondiente.  Si la columna ya existe (OperationalError),
@@ -227,7 +547,7 @@ def _run_migrations() -> None:
             try:
                 conn.execute(f"ALTER TABLE users ADD COLUMN {col} {definition}")
             except sqlite3.OperationalError:
-                pass  # columna ya existe — migración idempotente
+                pass
 
         # ── Sprint 11: índices de rendimiento ────────────────────────────────
         conn.execute(
@@ -242,15 +562,6 @@ def _run_migrations() -> None:
         )
 
         # ── Sprint 11: reasignar data huérfana (user_id=1 sin dueño real) ────
-        # Cuando se migra una BD existente, las filas antiguas reciben user_id
-        # del DEFAULT definido en el ALTER TABLE.  Si ese DEFAULT fue 1 (versiones
-        # anteriores de este script) y aún no existe ningún usuario con id=1 en
-        # la tabla users, esa data es legacy sin propietario.  Se mueve a
-        # user_id=0 (reservado — nunca asignado por AUTOINCREMENT) para que el
-        # primer usuario real que se registre (id=1) no la vea.
-        #
-        # Condición de seguridad: si ya existe un usuario con id=1, esa data le
-        # pertenece legítimamente y no se toca.
         owner_exists = conn.execute(
             "SELECT 1 FROM users WHERE id = 1"
         ).fetchone()
@@ -261,21 +572,13 @@ def _run_migrations() -> None:
 
         conn.commit()
 
-        # ── Sprint 11b: UNIQUE(date) → UNIQUE(date, user_id) en daily_summaries ─
-        # SQLite no permite ALTER TABLE para cambiar constraints existentes.
-        # Usamos el índice con nombre 'uq_daily_date_user' como marcador de
-        # migración: si no existe, la tabla aún tiene el constraint antiguo
-        # UNIQUE(date) (solo por fecha) y debemos recrearla con el nuevo
-        # constraint UNIQUE(date, user_id) para que cada usuario tenga su propio
-        # resumen diario sin colisionar con los demás.
+        # ── Sprint 11b: UNIQUE(date) → UNIQUE(date, user_id) en daily_summaries
         needs_unique_migration = conn.execute(
             "SELECT 1 FROM sqlite_master "
             "WHERE type='index' AND name='uq_daily_date_user'"
         ).fetchone() is None
 
         if needs_unique_migration:
-            # executescript() hace COMMIT implícito al inicio, cerrando la
-            # transacción anterior.  Los cambios ya committeados son seguros.
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS daily_summaries_new (
                     id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -295,8 +598,6 @@ def _run_migrations() -> None:
                 DROP TABLE daily_summaries;
                 ALTER TABLE daily_summaries_new RENAME TO daily_summaries;
             """)
-            # Recrear índices perdidos al DROP TABLE (DROP elimina todos sus índices).
-            # uq_daily_date_user actúa también como marcador de migración aplicada.
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS uq_daily_date_user "
                 "ON daily_summaries(date, user_id)"
@@ -308,16 +609,6 @@ def _run_migrations() -> None:
             conn.commit()
 
         # ── Migración: UNIQUE(term) → UNIQUE(term, user_id) en concepts ──────
-        # SQLite no permite ALTER TABLE para cambiar constraints existentes.
-        # Usamos el índice con nombre 'uq_concepts_term_user' como marcador:
-        # si no existe, la tabla tiene el constraint antiguo UNIQUE(term)
-        # (global entre todos los usuarios) y se debe recrear.
-        #
-        # La migración usa INSERT OR IGNORE para que si hubiera alguna
-        # colisión (caso imposible con el constraint anterior que ya era
-        # global) no interrumpa la copia.  Los id originales se preservan
-        # para mantener las FK de la tabla connections intactas.
-        # Los índices sobre concepts(user_id) se recrean tras el DROP/RENAME.
         needs_concepts_unique_migration = conn.execute(
             "SELECT 1 FROM sqlite_master "
             "WHERE type='index' AND name='uq_concepts_term_user'"
@@ -368,8 +659,6 @@ def _run_migrations() -> None:
                 DROP TABLE concepts;
                 ALTER TABLE concepts_new RENAME TO concepts;
             """)
-            # Recrear índices eliminados por el DROP TABLE.
-            # 'uq_concepts_term_user' actúa también como marcador de migración.
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS uq_concepts_term_user "
                 "ON concepts(term, user_id)"

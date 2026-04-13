@@ -33,7 +33,31 @@ from typing import Any
 import bcrypt
 
 from db.models import Concept, Connection, DailySummary, User
-from db.schema import get_connection
+from db.schema import get_connection, get_db_mode
+
+
+# ── placeholder adapter ───────────────────────────────────────────────────────
+
+def _adapt_query(sql: str, params: tuple = ()) -> tuple[str, tuple]:
+    """
+    Adapta el SQL y los parámetros al motor de base de datos activo.
+
+    SQLite usa '?' como placeholder; PostgreSQL usa '%s'.  La conexión
+    retornada por get_connection() aplica esta transformación automáticamente
+    en su método execute(), así que el código de operations.py puede seguir
+    escribiendo '?' en todas sus queries sin cambios.
+
+    Esta función está disponible para construir queries dinámicas (SET clauses,
+    etc.) que necesiten transformar los placeholders explícitamente antes de
+    llamar a métodos fuera de execute().
+
+    Devuelve
+    --------
+    Tupla (sql_adaptado, params) lista para pasar a conn.execute().
+    """
+    if get_db_mode() == "postgresql":
+        return sql.replace("?", "%s"), params
+    return sql, params
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -50,7 +74,7 @@ def _parse_dt(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value)
 
 
-def _row_to_concept(row: sqlite3.Row) -> Concept:
+def _row_to_concept(row: Any) -> Concept:
     """
     Convierte una fila de la tabla concepts en un dataclass Concept.
 
@@ -91,7 +115,7 @@ def _row_to_concept(row: sqlite3.Row) -> Concept:
     )
 
 
-def _row_to_connection(row: sqlite3.Row) -> Connection:
+def _row_to_connection(row: Any) -> Connection:
     """
     Convierte una fila de la tabla connections en un dataclass Connection.
     Sprint 11: lee el campo user_id con fallback a 1 para BDs antiguas.
@@ -107,7 +131,7 @@ def _row_to_connection(row: sqlite3.Row) -> Connection:
     )
 
 
-def _row_to_daily_summary(row: sqlite3.Row) -> DailySummary:
+def _row_to_daily_summary(row: Any) -> DailySummary:
     """
     Convierte una fila de la tabla daily_summaries en un dataclass DailySummary.
 
@@ -126,7 +150,7 @@ def _row_to_daily_summary(row: sqlite3.Row) -> DailySummary:
     )
 
 
-def _row_to_user(row: sqlite3.Row) -> User:
+def _row_to_user(row: Any) -> User:
     """
     Convierte una fila de la tabla users en un dataclass User.
 
@@ -145,7 +169,7 @@ def _row_to_user(row: sqlite3.Row) -> User:
     )
 
 
-def _concept_exists(conn: sqlite3.Connection, concept_id: int) -> bool:
+def _concept_exists(conn: Any, concept_id: int) -> bool:
     """
     Comprueba si existe un concepto con el ID dado dentro de una conexión abierta.
 
@@ -870,17 +894,18 @@ def get_concepts_due_today(user_id: int = 1) -> list[Concept]:
     --------
     list[Concept] — puede ser vacía si no hay conceptos pendientes hoy.
     """
+    today_str = date.today().isoformat()
     with get_connection() as conn:
         rows = conn.execute(
             """
             SELECT * FROM concepts
             WHERE is_classified = 1
               AND next_review IS NOT NULL
-              AND DATE(next_review) <= DATE('now')
+              AND SUBSTR(next_review, 1, 10) <= ?
               AND user_id = ?
             ORDER BY next_review ASC
             """,
-            (user_id,),
+            (today_str, user_id),
         ).fetchall()
     return [_row_to_concept(r) for r in rows]
 
@@ -1221,8 +1246,8 @@ def get_weak_categories(user_id: int = 1) -> list[dict]:
               AND  category != ''
               AND  user_id = ?
             GROUP  BY category
-            HAVING cnt > 2 AND avg_mastery < 2.5
-            ORDER  BY avg_mastery ASC
+            HAVING COUNT(*) > 2 AND AVG(mastery_level) < 2.5
+            ORDER  BY AVG(mastery_level) ASC
             """,
             (user_id,),
         ).fetchall()

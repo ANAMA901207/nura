@@ -17,3 +17,7 @@ python-dotenv==1.2.1
 
 # Tipos estáticos para TypedDict en Python < 3.11
 typing-extensions==4.15.0
+
+# Conector PostgreSQL para Supabase (Sprint 22)
+# Solo se usa cuando DATABASE_URL está definida en .env
+psycopg2-binary
