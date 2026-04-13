@@ -24,8 +24,9 @@ bcrypt==5.0.0
 # Generación de imágenes (favicon, diagramas)
 Pillow==12.0.0
 
-# Búsqueda web desde el agente tutor (módulo: ddgs)
-duckduckgo-search==8.1.1
+# Búsqueda web desde el agente tutor
+# PyPI: ddgs  →  from ddgs import DDGS
+ddgs==9.13.0
 
 # Conector PostgreSQL para Supabase (Sprint 22)
 # Solo se usa cuando DATABASE_URL está definida en .env
