@@ -18,6 +18,15 @@ python-dotenv==1.2.1
 # Tipos estáticos para TypedDict en Python < 3.11
 typing-extensions==4.15.0
 
+# Hashing de contraseñas
+bcrypt==5.0.0
+
+# Generación de imágenes (favicon, diagramas)
+Pillow==12.0.0
+
+# Búsqueda web desde el agente tutor
+duckduckgo-search==8.1.1
+
 # Conector PostgreSQL para Supabase (Sprint 22)
 # Solo se usa cuando DATABASE_URL está definida en .env
-psycopg2-binary
+psycopg2-binary==2.9.11
