@@ -1,0 +1,19 @@
+# Nura — Sistema de Aprendizaje Adaptativo
+# Instalar con: pip install -r requirements.txt
+
+# Interfaz web
+streamlit==1.56.0
+
+# Orquestación de agentes LLM
+langgraph==1.1.6
+langchain-google-genai==4.2.1
+langchain-core==1.2.24
+
+# Visualización del mapa de conocimiento
+pyvis==0.3.2
+
+# Variables de entorno (.env)
+python-dotenv==1.2.1
+
+# Tipos estáticos para TypedDict en Python < 3.11
+typing-extensions==4.15.0
