@@ -20,6 +20,8 @@ typing-extensions==4.15.0
 
 # Hashing de contraseñas
 bcrypt==5.0.0
+bcrypt
+duckduckgo-search
 
 # Generación de imágenes (favicon, diagramas)
 Pillow==12.0.0
