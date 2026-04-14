@@ -126,15 +126,30 @@ def _pg_connect(**extra_kwargs):
         for k, v in urllib.parse.parse_qs(parsed.query).items()
     }
 
+    import socket
+
     _host = parsed.hostname or "localhost"
     _user = urllib.parse.unquote(parsed.username or "")
     _dbname = (parsed.path or "/postgres").lstrip("/")
     _port = parsed.port or 5432
 
+    # Forzar IPv4: Streamlit Cloud no admite conexiones IPv6 salientes.
+    # Resolvemos el hostname y usamos el primer resultado IPv4 via `hostaddr`.
+    _hostaddr: str | None = None
+    try:
+        ipv4_results = socket.getaddrinfo(
+            _host, _port, socket.AF_INET, socket.SOCK_STREAM
+        )
+        if ipv4_results:
+            _hostaddr = ipv4_results[0][4][0]
+    except OSError:
+        pass  # si falla la resolución, dejamos que psycopg2 lo intente
+
     # Log de diagnóstico (sin contraseña) para identificar problemas de URL.
     print(
         f"[Nura/_pg_connect] host={_host!r} port={_port} "
-        f"user={_user!r} dbname={_dbname!r}"
+        f"user={_user!r} dbname={_dbname!r} "
+        f"hostaddr(IPv4)={_hostaddr!r}"
     )
 
     params: dict = {
@@ -146,6 +161,9 @@ def _pg_connect(**extra_kwargs):
         "sslmode":         qs.get("sslmode", "require"),  # default: require
         "connect_timeout": int(qs.get("connect_timeout", "15")),
     }
+    # `hostaddr` fuerza la IP concreta y evita que psycopg2 elija IPv6.
+    if _hostaddr:
+        params["hostaddr"] = _hostaddr
     params.update(extra_kwargs)
     return psycopg2.connect(**params)
 
