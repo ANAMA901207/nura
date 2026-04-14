@@ -78,7 +78,8 @@ DB_PATH: Path = Path(__file__).parent / "nura.db"
 # Bandera: True si init_db() intentó usar PostgreSQL pero cayó a SQLite.
 # La UI de app.py la lee para mostrar un aviso al usuario.
 pg_fallback_active: bool = False
-pg_fallback_error: str = ""  # mensaje del error que causó el fallback
+pg_fallback_error: str = ""   # mensaje del error que causó el fallback
+pg_debug_info: str = ""       # info de diagnóstico de _pg_connect (host, user, port)
 
 
 # ── Detección del motor activo ────────────────────────────────────────────────
@@ -124,9 +125,11 @@ def _pg_connect(**extra_kwargs):
     raw_url = os.environ.get("DATABASE_URL", "")
     url = raw_url.strip()
 
-    # Loguear URL saneada (contraseña tapada) para diagnóstico.
+    # Loguear y guardar URL saneada (contraseña tapada) para diagnóstico.
     _url_safe = url.split("@")[-1] if "@" in url else url
     print(f"[Nura/_pg_connect] DATABASE_URL (sin credenciales): ...@{_url_safe}")
+    global pg_debug_info
+    pg_debug_info = f"URL recibida (sin contraseña): ...@{_url_safe}"
 
     if not url:
         raise RuntimeError(
@@ -159,11 +162,12 @@ def _pg_connect(**extra_kwargs):
         pass  # si falla la resolución, dejamos que psycopg2 lo intente
 
     # Log de diagnóstico (sin contraseña) para identificar problemas de URL.
-    print(
-        f"[Nura/_pg_connect] host={_host!r} port={_port} "
-        f"user={_user!r} dbname={_dbname!r} "
-        f"hostaddr(IPv4)={_hostaddr!r}"
+    _diag = (
+        f"host={_host!r} port={_port} user={_user!r} "
+        f"dbname={_dbname!r} hostaddr(IPv4)={_hostaddr!r}"
     )
+    print(f"[Nura/_pg_connect] {_diag}")
+    pg_debug_info += f" | {_diag}"
 
     params: dict = {
         "host":            _host,
