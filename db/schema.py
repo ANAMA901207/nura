@@ -89,6 +89,21 @@ def get_db_mode() -> str:
     return "postgresql" if os.environ.get("DATABASE_URL") else "sqlite"
 
 
+def _pg_url() -> str:
+    """
+    Devuelve DATABASE_URL garantizando que incluye sslmode=require.
+
+    Supabase (y la mayoría de instancias PostgreSQL administradas) exigen
+    SSL.  Si la URL no declara sslmode, añadimos sslmode=require para
+    evitar el psycopg2.OperationalError 'SSL connection is required'.
+    """
+    url = os.environ.get("DATABASE_URL", "")
+    if url and "sslmode=" not in url:
+        sep = "&" if "?" in url else "?"
+        url = f"{url}{sep}sslmode=require"
+    return url
+
+
 # ── Cursor wrapper para psycopg2 ──────────────────────────────────────────────
 
 class _PGCursor:
@@ -148,7 +163,7 @@ class _NuraConn:
                     "psycopg2 no está instalado. "
                     "Ejecuta: pip install psycopg2-binary"
                 )
-            url = os.environ.get("DATABASE_URL", "")
+            url = _pg_url()
             self._raw = psycopg2.connect(
                 url,
                 cursor_factory=psycopg2.extras.RealDictCursor,
@@ -345,7 +360,7 @@ def _init_db_postgresql() -> None:
       TABLE de users, no como migración posterior.
     - Se crean los índices de rendimiento aquí también.
     """
-    url = os.environ.get("DATABASE_URL", "")
+    url = _pg_url()
     raw = psycopg2.connect(url)
     try:
         with raw.cursor() as cur:
@@ -443,7 +458,7 @@ def _run_migrations_postgresql() -> None:
     disponible.  No necesita recrear tablas como SQLite porque PostgreSQL
     soporta modificación de constraints directamente.
     """
-    url = os.environ.get("DATABASE_URL", "")
+    url = _pg_url()
     raw = psycopg2.connect(url)
     try:
         with raw.cursor() as cur:

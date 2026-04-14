@@ -22,10 +22,22 @@ estado que puedan dejar otros archivos de test.
 
 from __future__ import annotations
 
+import os
 import sys
 from unittest.mock import MagicMock
 
 import pytest
+
+# ── Garantizar modo SQLite durante todos los tests ────────────────────────────
+# Si DATABASE_URL está en el entorno (cargada desde .env local o heredada del
+# shell), los tests intentarían conectar a PostgreSQL y fallarían sin red.
+#
+# Solución: establecer DATABASE_URL="" (cadena vacía, falsy) ANTES de que
+# cualquier módulo llame a load_dotenv().  python-dotenv con override=False
+# (por defecto) no sobreescribe variables ya presentes en el entorno, así
+# que DATABASE_URL queda vacía durante toda la suite → get_db_mode() devuelve
+# 'sqlite' y nunca se intenta una conexión PostgreSQL.
+os.environ["DATABASE_URL"] = ""
 
 
 def _make_streamlit_mock() -> MagicMock:
