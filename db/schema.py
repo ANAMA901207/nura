@@ -165,19 +165,24 @@ def _pg_connect(**extra_kwargs):
     # intentamos DNS-over-HTTPS con Google (8.8.8.8) que siempre devuelve A.
     if _hostaddr is None:
         try:
+            import ipaddress as _ip
             import requests as _req
             _doh = _req.get(
                 "https://dns.google/resolve",
                 params={"name": _host, "type": "A"},
                 timeout=5,
             )
-            _ipv4s = [
-                a["data"]
-                for a in _doh.json().get("Answer", [])
-                if a.get("type") == 1  # type 1 = A record
-            ]
-            if _ipv4s:
-                _hostaddr = _ipv4s[0]
+            for _rec in _doh.json().get("Answer", []):
+                if int(_rec.get("type", 0)) != 1:   # solo registros A (tipo 1)
+                    continue
+                _candidate = str(_rec.get("data", "")).strip().rstrip(".")
+                try:
+                    _ip.IPv4Address(_candidate)     # valida que sea IPv4 real
+                    _hostaddr = _candidate
+                    break
+                except ValueError:
+                    continue
+            if _hostaddr:
                 print(f"[Nura/_pg_connect] IPv4 vía DoH: {_hostaddr!r}")
         except Exception as _doh_err:
             print(f"[Nura/_pg_connect] DoH falló: {_doh_err}")
