@@ -126,12 +126,23 @@ def _pg_connect(**extra_kwargs):
         for k, v in urllib.parse.parse_qs(parsed.query).items()
     }
 
+    _host = parsed.hostname or "localhost"
+    _user = urllib.parse.unquote(parsed.username or "")
+    _dbname = (parsed.path or "/postgres").lstrip("/")
+    _port = parsed.port or 5432
+
+    # Log de diagnóstico (sin contraseña) para identificar problemas de URL.
+    print(
+        f"[Nura/_pg_connect] host={_host!r} port={_port} "
+        f"user={_user!r} dbname={_dbname!r}"
+    )
+
     params: dict = {
-        "host":            parsed.hostname or "localhost",
-        "port":            parsed.port or 5432,
-        "user":            urllib.parse.unquote(parsed.username or ""),
+        "host":            _host,
+        "port":            _port,
+        "user":            _user,
         "password":        urllib.parse.unquote(parsed.password or ""),
-        "dbname":          (parsed.path or "/postgres").lstrip("/"),
+        "dbname":          _dbname,
         "sslmode":         qs.get("sslmode", "require"),  # default: require
         "connect_timeout": int(qs.get("connect_timeout", "15")),
     }
