@@ -1799,9 +1799,11 @@ def main() -> None:
     # Aviso si init_db() no pudo conectar a PostgreSQL y cayó a SQLite.
     import db.schema as _db_schema
     if _db_schema.pg_fallback_active:
+        _err_detail = _db_schema.pg_fallback_error
         st.warning(
             "⚠️ **No se pudo conectar a Supabase** — la app está usando SQLite local "
-            "(los datos **no son persistentes** entre reinicios). "
+            "(los datos **no son persistentes** entre reinicios).  \n"
+            f"**Error:** `{_err_detail}`  \n"
             "Verifica que `DATABASE_URL` esté correctamente configurada en los "
             "**Secrets de Streamlit Cloud** y que el proyecto Supabase no esté pausado.",
         )

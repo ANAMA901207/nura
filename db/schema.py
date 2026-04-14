@@ -78,6 +78,7 @@ DB_PATH: Path = Path(__file__).parent / "nura.db"
 # Bandera: True si init_db() intentó usar PostgreSQL pero cayó a SQLite.
 # La UI de app.py la lee para mostrar un aviso al usuario.
 pg_fallback_active: bool = False
+pg_fallback_error: str = ""  # mensaje del error que causó el fallback
 
 
 # ── Detección del motor activo ────────────────────────────────────────────────
@@ -326,8 +327,11 @@ def init_db() -> None:
             _init_db_postgresql()
         except Exception as _pg_err:  # noqa: BLE001
             import traceback as _tb
-            global pg_fallback_active
+            global pg_fallback_active, pg_fallback_error
             pg_fallback_active = True
+            pg_fallback_error = (
+                f"{type(_pg_err).__name__}: {_pg_err}"
+            )
             # Desactivar PostgreSQL para el resto de la sesión y usar SQLite.
             # get_db_mode() y get_connection() también quedarán en modo SQLite.
             os.environ["DATABASE_URL"] = ""
