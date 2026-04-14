@@ -165,7 +165,33 @@ def _pg_connect(**extra_kwargs):
     if _hostaddr:
         params["hostaddr"] = _hostaddr
     params.update(extra_kwargs)
-    return psycopg2.connect(**params)
+
+    # Intentar la conexión.  Si el Session Pooler (5432) devuelve
+    # "Tenant or user not found" (proyecto pausado o pooler incorrecto)
+    # reintentamos automáticamente con el Transaction Pooler (6543).
+    try:
+        return psycopg2.connect(**params)
+    except psycopg2.OperationalError as _e:
+        _msg = str(_e).lower()
+        # Sólo reintentamos si el error es del pooler y el puerto era 5432.
+        if "tenant or user not found" in _msg and params.get("port") == 5432:
+            print(
+                "[Nura/_pg_connect] Session pooler (5432) rechazó con "
+                "'Tenant or user not found'. Reintentando con Transaction "
+                "pooler (6543)…"
+            )
+            fallback_params = {**params, "port": 6543}
+            # Resolver IPv4 para el mismo host pero puerto 6543.
+            try:
+                _res6543 = socket.getaddrinfo(
+                    _host, 6543, socket.AF_INET, socket.SOCK_STREAM
+                )
+                if _res6543:
+                    fallback_params["hostaddr"] = _res6543[0][4][0]
+            except OSError:
+                pass
+            return psycopg2.connect(**fallback_params)
+        raise
 
 
 # ── Cursor wrapper para psycopg2 ──────────────────────────────────────────────
