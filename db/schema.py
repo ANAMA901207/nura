@@ -150,7 +150,7 @@ def _pg_connect(**extra_kwargs):
     _port = parsed.port or 5432
 
     # Forzar IPv4: Streamlit Cloud no admite conexiones IPv6 salientes.
-    # Resolvemos el hostname y usamos el primer resultado IPv4 via `hostaddr`.
+    # Paso 1: resolver con el DNS del sistema (AF_INET → solo registros A).
     _hostaddr: str | None = None
     try:
         ipv4_results = socket.getaddrinfo(
@@ -159,7 +159,28 @@ def _pg_connect(**extra_kwargs):
         if ipv4_results:
             _hostaddr = ipv4_results[0][4][0]
     except OSError:
-        pass  # si falla la resolución, dejamos que psycopg2 lo intente
+        pass
+
+    # Paso 2: si el DNS del sistema no devolvió IPv4 (host solo tiene AAAA),
+    # intentamos DNS-over-HTTPS con Google (8.8.8.8) que siempre devuelve A.
+    if _hostaddr is None:
+        try:
+            import requests as _req
+            _doh = _req.get(
+                "https://dns.google/resolve",
+                params={"name": _host, "type": "A"},
+                timeout=5,
+            )
+            _ipv4s = [
+                a["data"]
+                for a in _doh.json().get("Answer", [])
+                if a.get("type") == 1  # type 1 = A record
+            ]
+            if _ipv4s:
+                _hostaddr = _ipv4s[0]
+                print(f"[Nura/_pg_connect] IPv4 vía DoH: {_hostaddr!r}")
+        except Exception as _doh_err:
+            print(f"[Nura/_pg_connect] DoH falló: {_doh_err}")
 
     # Log de diagnóstico (sin contraseña) para identificar problemas de URL.
     _diag = (
