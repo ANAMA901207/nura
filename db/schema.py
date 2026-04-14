@@ -115,9 +115,24 @@ def _pg_connect(**extra_kwargs):
     Supabase exige SSL.  Añadimos sslmode='require' salvo que la URL
     ya declare otro valor explícito en su query string.
     """
+    import socket
     import urllib.parse
 
-    url = os.environ.get("DATABASE_URL", "")
+    # Sanear ANTES de parsear: eliminar espacios, newlines o BOM accidentales.
+    # Ocurre cuando el TOML de Streamlit Cloud rompe el valor en varias líneas,
+    # resultando en un DATABASE_URL que empieza con '\n' y urlparse no reconoce.
+    raw_url = os.environ.get("DATABASE_URL", "")
+    url = raw_url.strip()
+
+    # Loguear URL saneada (contraseña tapada) para diagnóstico.
+    _url_safe = url.split("@")[-1] if "@" in url else url
+    print(f"[Nura/_pg_connect] DATABASE_URL (sin credenciales): ...@{_url_safe}")
+
+    if not url:
+        raise RuntimeError(
+            "DATABASE_URL está vacía. Verifica los Secrets de Streamlit Cloud."
+        )
+
     parsed = urllib.parse.urlparse(url)
 
     # Parámetros del query string de la URL (ej. ?sslmode=require)
@@ -125,8 +140,6 @@ def _pg_connect(**extra_kwargs):
         k: v[0]
         for k, v in urllib.parse.parse_qs(parsed.query).items()
     }
-
-    import socket
 
     _host = parsed.hostname or "localhost"
     _user = urllib.parse.unquote(parsed.username or "")
