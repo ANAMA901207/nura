@@ -75,6 +75,10 @@ _SPRINT15_USER_MIGRATIONS = [
 # Ruta al archivo SQLite.  Sobreescribible desde tests para usar BDs temporales.
 DB_PATH: Path = Path(__file__).parent / "nura.db"
 
+# Bandera: True si init_db() intentó usar PostgreSQL pero cayó a SQLite.
+# La UI de app.py la lee para mostrar un aviso al usuario.
+pg_fallback_active: bool = False
+
 
 # ── Detección del motor activo ────────────────────────────────────────────────
 
@@ -310,9 +314,28 @@ def init_db() -> None:
 
     Selecciona el DDL apropiado según el motor activo y luego aplica las
     migraciones incrementales para bases de datos existentes.
+
+    Si DATABASE_URL está configurada pero la conexión PostgreSQL falla
+    (proyecto pausado, credenciales incorrectas, red no disponible),
+    registra la advertencia en consola y cae back a SQLite para que
+    la aplicación siga funcionando.  El banner amarillo en la UI notifica
+    al usuario de la situación.
     """
     if get_db_mode() == "postgresql":
-        _init_db_postgresql()
+        try:
+            _init_db_postgresql()
+        except Exception as _pg_err:  # noqa: BLE001
+            global pg_fallback_active
+            pg_fallback_active = True
+            # Desactivar PostgreSQL para el resto de la sesión y usar SQLite.
+            # get_db_mode() y get_connection() también quedarán en modo SQLite.
+            os.environ["DATABASE_URL"] = ""
+            print(
+                f"[Nura] ADVERTENCIA: PostgreSQL no disponible "
+                f"({type(_pg_err).__name__}: {_pg_err}). "
+                "Usando SQLite local."
+            )
+            _init_db_sqlite()
     else:
         _init_db_sqlite()
     _run_migrations()

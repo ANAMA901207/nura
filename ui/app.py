@@ -1795,6 +1795,17 @@ def main() -> None:
     st.markdown(_CSS, unsafe_allow_html=True)
 
     init_db()
+
+    # Aviso si init_db() no pudo conectar a PostgreSQL y cayó a SQLite.
+    import db.schema as _db_schema
+    if _db_schema.pg_fallback_active:
+        st.warning(
+            "⚠️ **No se pudo conectar a Supabase** — la app está usando SQLite local "
+            "(los datos **no son persistentes** entre reinicios). "
+            "Verifica que `DATABASE_URL` esté correctamente configurada en los "
+            "**Secrets de Streamlit Cloud** y que el proyecto Supabase no esté pausado.",
+        )
+
     _init_session()
 
     # ── Autenticación (Sprint 11) ──────────────────────────────────────────────
