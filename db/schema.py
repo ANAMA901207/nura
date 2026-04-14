@@ -325,15 +325,17 @@ def init_db() -> None:
         try:
             _init_db_postgresql()
         except Exception as _pg_err:  # noqa: BLE001
+            import traceback as _tb
             global pg_fallback_active
             pg_fallback_active = True
             # Desactivar PostgreSQL para el resto de la sesión y usar SQLite.
             # get_db_mode() y get_connection() también quedarán en modo SQLite.
             os.environ["DATABASE_URL"] = ""
             print(
-                f"[Nura] ADVERTENCIA: PostgreSQL no disponible "
-                f"({type(_pg_err).__name__}: {_pg_err}). "
-                "Usando SQLite local."
+                "[Nura] ═══ ERROR POSTGRESQL — usando SQLite como fallback ═══\n"
+                f"Tipo : {type(_pg_err).__name__}\n"
+                f"Causa: {_pg_err}\n"
+                f"Traza:\n{_tb.format_exc()}"
             )
             _init_db_sqlite()
     else:
@@ -402,14 +404,18 @@ def _init_db_sqlite() -> None:
 
 def _init_db_postgresql() -> None:
     """
-    Inicializa el esquema en PostgreSQL.
+    Inicializa el esquema en PostgreSQL (Supabase).
 
-    Diferencias respecto al DDL SQLite:
-    - SERIAL PRIMARY KEY en lugar de INTEGER PRIMARY KEY AUTOINCREMENT.
-    - FLOAT en lugar de REAL (ambos son float8 en PG; REAL es alias de float4).
-    - Los campos de perfil (Sprint 15) se incluyen directamente en el CREATE
-      TABLE de users, no como migración posterior.
-    - Se crean los índices de rendimiento aquí también.
+    Sintaxis PostgreSQL usada — diferencias clave respecto a SQLite:
+    ─────────────────────────────────────────────────────────────────
+    • SERIAL PRIMARY KEY          ← auto-increment de PG (no AUTOINCREMENT)
+    • FLOAT                       ← float8; REAL en SQLite es float4
+    • TEXT NOT NULL DEFAULT ''    ← igual en ambos motores
+    • CHECK, UNIQUE, REFERENCES   ← igual en ambos motores
+    • CREATE INDEX IF NOT EXISTS  ← disponible en PG 9.5+; Supabase usa PG 15
+    ─────────────────────────────────────────────────────────────────
+    No uses AUTOINCREMENT aquí — es sintaxis exclusiva de SQLite y
+    provoca psycopg2.ProgrammingError al ejecutar el DDL en PostgreSQL.
     """
     raw = _pg_connect()
     try:
