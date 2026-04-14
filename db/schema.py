@@ -89,19 +89,49 @@ def get_db_mode() -> str:
     return "postgresql" if os.environ.get("DATABASE_URL") else "sqlite"
 
 
-def _pg_url() -> str:
+def _pg_connect(**extra_kwargs):
     """
-    Devuelve DATABASE_URL garantizando que incluye sslmode=require.
+    Abre una conexión psycopg2 parseando DATABASE_URL en componentes individuales.
 
-    Supabase (y la mayoría de instancias PostgreSQL administradas) exigen
-    SSL.  Si la URL no declara sslmode, añadimos sslmode=require para
-    evitar el psycopg2.OperationalError 'SSL connection is required'.
+    Por qué no usar la URL directamente
+    ------------------------------------
+    psycopg2 parsea la URL con el parser estándar de libpq, que interpreta
+    ciertos caracteres ([ ] @ : /) como delimitadores de la URL.  Si la
+    contraseña contiene alguno de estos caracteres — habitual en Supabase
+    y otros servicios que generan passwords aleatorias — el parser los
+    interpreta mal y lanza OperationalError antes de intentar la conexión.
+
+    La solución es parsear la URL con `urllib.parse` (que hace unquote del
+    percent-encoding) y pasar host, port, user, password y dbname como
+    kwargs separados.  Así psycopg2 no necesita tocar la contraseña.
+
+    Parámetros SSL
+    --------------
+    Supabase exige SSL.  Añadimos sslmode='require' salvo que la URL
+    ya declare otro valor explícito en su query string.
     """
+    import urllib.parse
+
     url = os.environ.get("DATABASE_URL", "")
-    if url and "sslmode=" not in url:
-        sep = "&" if "?" in url else "?"
-        url = f"{url}{sep}sslmode=require"
-    return url
+    parsed = urllib.parse.urlparse(url)
+
+    # Parámetros del query string de la URL (ej. ?sslmode=require)
+    qs: dict[str, str] = {
+        k: v[0]
+        for k, v in urllib.parse.parse_qs(parsed.query).items()
+    }
+
+    params: dict = {
+        "host":            parsed.hostname or "localhost",
+        "port":            parsed.port or 5432,
+        "user":            urllib.parse.unquote(parsed.username or ""),
+        "password":        urllib.parse.unquote(parsed.password or ""),
+        "dbname":          (parsed.path or "/postgres").lstrip("/"),
+        "sslmode":         qs.get("sslmode", "require"),  # default: require
+        "connect_timeout": int(qs.get("connect_timeout", "15")),
+    }
+    params.update(extra_kwargs)
+    return psycopg2.connect(**params)
 
 
 # ── Cursor wrapper para psycopg2 ──────────────────────────────────────────────
@@ -163,9 +193,7 @@ class _NuraConn:
                     "psycopg2 no está instalado. "
                     "Ejecuta: pip install psycopg2-binary"
                 )
-            url = _pg_url()
-            self._raw = psycopg2.connect(
-                url,
+            self._raw = _pg_connect(
                 cursor_factory=psycopg2.extras.RealDictCursor,
             )
         else:
@@ -360,8 +388,7 @@ def _init_db_postgresql() -> None:
       TABLE de users, no como migración posterior.
     - Se crean los índices de rendimiento aquí también.
     """
-    url = _pg_url()
-    raw = psycopg2.connect(url)
+    raw = _pg_connect()
     try:
         with raw.cursor() as cur:
             cur.execute("""
@@ -458,8 +485,7 @@ def _run_migrations_postgresql() -> None:
     disponible.  No necesita recrear tablas como SQLite porque PostgreSQL
     soporta modificación de constraints directamente.
     """
-    url = _pg_url()
-    raw = psycopg2.connect(url)
+    raw = _pg_connect()
     try:
         with raw.cursor() as cur:
             all_concept_cols = (
