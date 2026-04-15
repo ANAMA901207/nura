@@ -55,6 +55,7 @@ from datetime import date
 
 from db.schema import init_db
 from db.operations import (
+    delete_concept,
     get_all_concepts,
     get_all_connections,
     get_concept_by_id,
@@ -1572,7 +1573,7 @@ def _render_view_dominar() -> None:
             unsafe_allow_html=True,
         )
         for uc in unclassified:
-            col_label, col_btn = st.columns([4, 1])
+            col_label, col_retry, col_del = st.columns([4, 1, 1])
             with col_label:
                 st.markdown(
                     f"<p style='color:#cdd6f4; margin:0; padding:0.4rem 0;'>"
@@ -1581,7 +1582,7 @@ def _render_view_dominar() -> None:
                     f"(capturado {uc.created_at.strftime('%d/%m/%Y')})</span></p>",
                     unsafe_allow_html=True,
                 )
-            with col_btn:
+            with col_retry:
                 if st.button("Reintentar", key=f"retry_{uc.id}", use_container_width=True):
                     with st.spinner(f"Reclasificando '{uc.term}'..."):
                         try:
@@ -1589,6 +1590,24 @@ def _render_view_dominar() -> None:
                         except Exception as exc:
                             st.error(f"Error: {exc}")
                     st.rerun()
+            with col_del:
+                _confirm_key = f"_del_confirm_{uc.id}"
+                if not st.session_state.get(_confirm_key, False):
+                    if st.button("Eliminar", key=f"del_{uc.id}", use_container_width=True):
+                        st.session_state[_confirm_key] = True
+                        st.rerun()
+                else:
+                    st.warning(f"¿Eliminar «{uc.term}»?")
+                    col_yes, col_no = st.columns(2)
+                    with col_yes:
+                        if st.button("Sí", key=f"del_yes_{uc.id}", use_container_width=True, type="primary"):
+                            delete_concept(uc.id, user_id=uid)
+                            st.session_state.pop(_confirm_key, None)
+                            st.rerun()
+                    with col_no:
+                        if st.button("No", key=f"del_no_{uc.id}", use_container_width=True):
+                            st.session_state.pop(_confirm_key, None)
+                            st.rerun()
         st.markdown("<div style='margin-bottom:0.5rem;'></div>", unsafe_allow_html=True)
 
     if not concepts:

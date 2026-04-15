@@ -102,6 +102,21 @@ _CHAT_PHRASES = [
     "comenzar",
     "vamos",
     "sigamos",
+    # Frases interrogativas con pronombres que NO son términos técnicos
+    "tu quien eres",
+    "y tu quien eres",
+    "y tu",
+    "tu quien",
+    "quien eres tu",
+    "que eres tu",
+    "como te llamas",
+    "como te llama",
+    "como te llaman",
+    "cual es tu nombre",
+    "cual es tu proposito",
+    "cual es tu funcion",
+    "para que eres",
+    "que haces tu",
 ]
 
 
