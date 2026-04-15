@@ -565,9 +565,17 @@ def render_knowledge_map(
                     url.searchParams.set('view', 'conectar');
                     parentWin.history.replaceState(null, '', url);
                     var clicked = false;
+                    var syncHost = parentWin.document.querySelector('.st-key-nura_map_node_sync');
+                    var ti, el, t, stb, btn, j, b, txt;
+                    if (syncHost) {
+                        btn = syncHost.tagName === 'BUTTON' ? syncHost : syncHost.querySelector('button');
+                        if (btn) {
+                            btn.click();
+                            clicked = true;
+                        }
+                    }
                     var titleNeedle = 'NURA_MAP_INTERNAL_SYNC_V1';
                     var titled = parentWin.document.querySelectorAll('[title]');
-                    var ti, el, t, stb, btn, j, b, txt;
                     for (ti = 0; ti < titled.length; ti++) {
                         el = titled[ti];
                         t = el.getAttribute('title') || '';

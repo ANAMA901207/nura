@@ -207,6 +207,20 @@ header[data-testid="stHeader"] { height: 2.5rem; }
     color: #cdd6f4;
     border-color: #60a0ff44;
 }
+/* Conectar / mapa: botón puente para sync sin recarga (st.button no tiene label_visibility) */
+.st-key-nura_map_node_sync {
+    position: absolute !important;
+    left: -9999px !important;
+    top: 0 !important;
+    width: 1px !important;
+    height: 1px !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    overflow: hidden !important;
+    clip: rect(0, 0, 0, 0) !important;
+    border: 0 !important;
+    white-space: nowrap !important;
+}
 /* Sidebar nav buttons (inside stColumns): borderless, text-left */
 [data-testid="stSidebar"] [data-testid="stColumns"] .stButton > button {
     background: transparent !important;
@@ -1772,7 +1786,6 @@ def _render_view_conectar() -> None:
         key="nura_map_node_sync",
         help="NURA_MAP_INTERNAL_SYNC_V1",
         type="secondary",
-        label_visibility="collapsed",
     )
 
     st.components.v1.html(map_html, height=540, scrolling=False)
