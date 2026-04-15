@@ -1764,6 +1764,17 @@ def _render_view_conectar() -> None:
             filter_min_mastery=min_mastery,
         )
 
+    # El mapa (iframe pyvis) no puede llamar a Python; el JS pone nura_node en la
+    # URL con replaceState y hace click en este botón para un rerun sin recarga
+    # completa (evita perder session_state, p. ej. el usuario autenticado).
+    st.button(
+        "NURA_NODE_SYNC",
+        key="nura_map_node_sync",
+        help="NURA_MAP_INTERNAL_SYNC_V1",
+        type="secondary",
+        label_visibility="collapsed",
+    )
+
     st.components.v1.html(map_html, height=540, scrolling=False)
 
     # ── Panel de detalle del nodo enfocado ────────────────────────────────────

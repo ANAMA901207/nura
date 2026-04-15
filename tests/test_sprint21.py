@@ -235,12 +235,23 @@ class TestNodeClickJS(unittest.TestCase):
         km_body = content[km_start:km_end]
         self.assertIn("network.on('click'", km_body)
 
-    def test_node_click_uses_location_navigation(self):
-        """El click en nodo debe usar window.parent.location.href con nura_node param."""
+    def test_node_click_avoids_full_page_reload(self):
+        """El click en nodo debe usar replaceState (no location.href) para no perder la sesión."""
         comp_path = ROOT / "ui" / "components.py"
         content = comp_path.read_text(encoding="utf-8")
         self.assertIn("nura_node", content)
-        self.assertIn("window.parent.location.href", content)
+        self.assertIn("history.replaceState", content)
+        self.assertNotIn("window.parent.location.href", content)
+
+    def test_conectar_has_hidden_map_sync_button(self):
+        """_render_view_conectar incluye el botón puente para el sync del mapa."""
+        app_path = ROOT / "ui" / "app.py"
+        content = app_path.read_text(encoding="utf-8")
+        start = content.find("def _render_view_conectar")
+        end = content.find("\ndef ", start + 1)
+        body = content[start:end]
+        self.assertIn("nura_map_node_sync", body)
+        self.assertIn("NURA_MAP_INTERNAL_SYNC_V1", body)
 
     def test_conectar_uses_selectbox_filter(self):
         """Sprint 22: _render_view_conectar usa selectbox Streamlit para filtrar el mapa."""

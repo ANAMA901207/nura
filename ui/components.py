@@ -432,10 +432,11 @@ def render_knowledge_map(
     todos los recursos de vis.js via CDN y puede embeberse directamente con
     st.components.v1.html().
 
-    El HTML resultante incluye un listener JavaScript que, al hacer click
-    sobre un nodo, envía el nodeId al documento padre mediante postMessage
-    (tipo 'nura_node_click').  app.py escucha ese evento y actualiza
-    st.session_state.map_filter_concept_id para filtrar el mapa.
+    El HTML incluye un listener JavaScript que, al hacer click en un nodo,
+    actualiza la URL del padre con history.replaceState (?nura_node=…&view=conectar)
+    y hace click en el botón oculto NURA_NODE_SYNC de app.py para un rerun de
+    Streamlit sin recargar la página (así no se pierde la sesión de login).
+    _init_session() en app.py lee esos query params y rellena map_filter_concept_id.
 
     Parametros
     ----------
@@ -544,11 +545,12 @@ def render_knowledge_map(
 
     html = net.generate_html()
 
-    # ── Click en nodo → navega el padre a la misma URL con ?nura_node=<id> ────
-    # Streamlit incluye allow-top-navigation-by-user-activation en el sandbox del
-    # iframe, por lo que un click de usuario SÍ puede navegar la ventana padre.
-    # La navegación recarga la app preservando la vista Conectar gracias al
-    # parámetro ?view=conectar que _init_state() lee al arrancar.
+    # ── Click en nodo → URL con ?nura_node=<id> sin recargar la página ───────────
+    # Asignar location.href en la ventana padre recarga el documento; Streamlit
+    # resetea session_state en recarga (docs: sesión ligada al WebSocket), lo que
+    # cerraba la sesión de login.  Se usa history.replaceState y un click
+    # programático al botón oculto nura_map_node_sync en app.py para provocar un
+    # rerun conservando la sesión.  _init_session() sigue leyendo nura_node/view.
     _click_script = """
 <script>
 (function waitForNetwork() {
@@ -557,11 +559,47 @@ def render_knowledge_map(
             if (params.nodes && params.nodes.length > 0) {
                 var nodeId = params.nodes[0];
                 try {
-                    var base = window.parent.location.pathname;
-                    window.parent.location.href = base + '?nura_node=' + encodeURIComponent(nodeId) + '&view=conectar';
+                    var parentWin = window.parent;
+                    var url = new URL(parentWin.location.href);
+                    url.searchParams.set('nura_node', String(nodeId));
+                    url.searchParams.set('view', 'conectar');
+                    parentWin.history.replaceState(null, '', url);
+                    var clicked = false;
+                    var titleNeedle = 'NURA_MAP_INTERNAL_SYNC_V1';
+                    var titled = parentWin.document.querySelectorAll('[title]');
+                    var ti, el, t, stb, btn, j, b, txt;
+                    for (ti = 0; ti < titled.length; ti++) {
+                        el = titled[ti];
+                        t = el.getAttribute('title') || '';
+                        if (t.indexOf(titleNeedle) !== -1) {
+                            stb = el.closest('[data-testid="stButton"]');
+                            if (stb) {
+                                btn = stb.querySelector('button');
+                                if (btn) {
+                                    btn.click();
+                                    clicked = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if (!clicked) {
+                        var allBtns = parentWin.document.querySelectorAll('button');
+                        for (j = 0; j < allBtns.length; j++) {
+                            b = allBtns[j];
+                            txt = (b.innerText || b.textContent || '').trim();
+                            if (txt === 'NURA_NODE_SYNC') {
+                                b.click();
+                                clicked = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (!clicked) {
+                        console.warn('Nura: no se pudo sincronizar el mapa (usa el selector de nodos)');
+                    }
                 } catch(e) {
-                    // Sandbox bloqueó la navegación — no hace nada (el selectbox sigue disponible)
-                    console.warn('Nura: node click navigation blocked', e);
+                    console.warn('Nura: node click sync blocked', e);
                 }
             }
         });
