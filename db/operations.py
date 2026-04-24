@@ -154,8 +154,9 @@ def _row_to_user(row: Any) -> User:
     """
     Convierte una fila de la tabla users en un dataclass User.
 
-    Lee los campos de perfil de onboarding (Sprint 15) con get() para
-    compatibilidad con BDs anteriores a la migración.
+    Lee los campos de perfil de onboarding (Sprint 15) y la meta diaria
+    (Sprint 24) con comprobación de clave para compatibilidad con BDs
+    anteriores a cada migración.
     """
     keys = row.keys()
     return User(
@@ -166,6 +167,7 @@ def _row_to_user(row: Any) -> User:
         profession=row["profession"]    if "profession"    in keys else "",
         learning_area=row["learning_area"] if "learning_area" in keys else "",
         tech_level=row["tech_level"]    if "tech_level"    in keys else "",
+        daily_goal=int(row["daily_goal"]) if "daily_goal" in keys else 3,
     )
 
 
@@ -1115,7 +1117,12 @@ def get_mastery_by_category(user_id: int = 1) -> dict[str, float]:
 
 def get_streak(user_id: int = 1) -> int:
     """
-    Cuenta los dias consecutivos de actividad del usuario hasta hoy.
+    Cuenta los días consecutivos hacia atrás desde hoy en que el usuario
+    capturó al menos 1 concepto nuevo.
+
+    Sprint 24: usa la fecha de `created_at` de la tabla `concepts` en lugar
+    de `daily_summaries`, lo que garantiza que el streak refleja capturas
+    reales independientemente del estado de los resúmenes diarios.
 
     Parámetros
     ----------
@@ -1123,7 +1130,8 @@ def get_streak(user_id: int = 1) -> int:
 
     Devuelve
     --------
-    int — número de dias consecutivos activos (0 si hoy no tiene actividad).
+    int — días consecutivos con al menos 1 concepto capturado.
+          0 si hoy no se capturó ningún concepto.
     """
     from datetime import timedelta
 
@@ -1133,21 +1141,107 @@ def get_streak(user_id: int = 1) -> int:
 
     with get_connection() as conn:
         for _ in range(730):
+            date_str = check_date.isoformat()
             row = conn.execute(
                 """
-                SELECT concepts_captured, concepts_reviewed
-                FROM daily_summaries
-                WHERE date = ? AND user_id = ?
+                SELECT COUNT(*) AS cnt
+                FROM concepts
+                WHERE user_id = ?
+                  AND SUBSTR(created_at, 1, 10) = ?
                 """,
-                (check_date.isoformat(), user_id),
+                (user_id, date_str),
             ).fetchone()
-            if row and (row["concepts_captured"] > 0 or row["concepts_reviewed"] > 0):
+            if row and row["cnt"] > 0:
                 streak += 1
                 check_date -= timedelta(days=1)
             else:
                 break
 
     return streak
+
+
+def get_today_count(user_id: int = 1) -> int:
+    """
+    Cuenta los conceptos capturados hoy (fecha local) por el usuario.
+
+    Sprint 24: consulta directamente la tabla `concepts` usando
+    la fecha local de `created_at` para calcular el progreso del día.
+
+    Parámetros
+    ----------
+    user_id : ID del usuario (default=1).
+
+    Devuelve
+    --------
+    int — número de conceptos cuyo `created_at` tiene la fecha de hoy.
+    """
+    today_str = date.today().isoformat()
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS cnt
+            FROM concepts
+            WHERE user_id = ?
+              AND SUBSTR(created_at, 1, 10) = ?
+            """,
+            (user_id, today_str),
+        ).fetchone()
+    return row["cnt"] if row else 0
+
+
+def get_daily_goal(user_id: int = 1) -> int:
+    """
+    Retorna la meta diaria de conceptos del usuario.
+
+    Sprint 24: lee el campo `daily_goal` de la tabla `users`.
+    Si el usuario no existe o el campo no está presente (BD antigua),
+    devuelve 3 como valor por defecto.
+
+    Parámetros
+    ----------
+    user_id : ID del usuario (default=1).
+
+    Devuelve
+    --------
+    int — meta diaria configurada por el usuario (mínimo 1, default 3).
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT daily_goal FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+    if row is None:
+        return 3
+    keys = row.keys() if hasattr(row, "keys") else []
+    return int(row["daily_goal"]) if "daily_goal" in keys else 3
+
+
+def update_daily_goal(user_id: int, goal: int) -> None:
+    """
+    Actualiza la meta diaria de conceptos del usuario en la BD.
+
+    Sprint 24: persiste el campo `daily_goal` en la tabla `users`.
+    El valor se recorta al rango [1, 50] para evitar metas absurdas.
+
+    Parámetros
+    ----------
+    user_id : ID del usuario a actualizar.
+    goal    : Nueva meta diaria (se ajusta al rango [1, 50]).
+
+    Lanza
+    -----
+    ValueError : Si no existe ningún usuario con ese ID.
+    """
+    goal = max(1, min(50, int(goal)))
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT id FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"No existe ningún usuario con id={user_id}.")
+        conn.execute(
+            "UPDATE users SET daily_goal = ? WHERE id = ?",
+            (goal, user_id),
+        )
 
 
 def clear_legacy_data() -> dict[str, int]:
@@ -1188,6 +1282,105 @@ def clear_legacy_data() -> dict[str, int]:
         "connections":     c_connections,
         "daily_summaries": c_summaries,
     }
+
+
+# ── Sprint 25: vinculación con Telegram ───────────────────────────────────────
+
+def get_user_by_telegram_id(telegram_id: str) -> "User | None":
+    """
+    Devuelve el User vinculado al telegram_id dado, o None si no existe.
+
+    Parámetros
+    ----------
+    telegram_id : ID de Telegram del usuario (como string).
+
+    Devuelve
+    --------
+    User si hay un registro con ese telegram_id, None en caso contrario.
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM users WHERE telegram_id = ?", (str(telegram_id),)
+        ).fetchone()
+    return _row_to_user(row) if row is not None else None
+
+
+def set_telegram_id(user_id: int, telegram_id: str) -> None:
+    """
+    Vincula un telegram_id con el usuario dado.
+
+    Parámetros
+    ----------
+    user_id     : ID del usuario en Nura.
+    telegram_id : ID de Telegram a vincular.
+
+    Lanza
+    -----
+    ValueError : Si no existe ningún usuario con ese ID.
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT id FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"No existe ningún usuario con id={user_id}.")
+        conn.execute(
+            "UPDATE users SET telegram_id = ? WHERE id = ?",
+            (str(telegram_id), user_id),
+        )
+
+
+def save_link_code(user_id: int, code: str, expiry: str) -> None:
+    """
+    Guarda el código de vinculación temporal y su fecha de expiración.
+
+    Parámetros
+    ----------
+    user_id : ID del usuario en Nura.
+    code    : Código de 6 dígitos generado.
+    expiry  : Timestamp ISO 8601 de expiración (ahora + 10 minutos).
+
+    Lanza
+    -----
+    ValueError : Si no existe ningún usuario con ese ID.
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT id FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"No existe ningún usuario con id={user_id}.")
+        conn.execute(
+            "UPDATE users SET link_code = ?, link_code_expiry = ? WHERE id = ?",
+            (code, expiry, user_id),
+        )
+
+
+def get_user_by_link_code(code: str) -> "User | None":
+    """
+    Devuelve el User cuyo link_code coincide con el código dado y no ha expirado.
+
+    Parámetros
+    ----------
+    code : Código de 6 dígitos enviado por el usuario en Telegram.
+
+    Devuelve
+    --------
+    User si el código existe y no ha expirado, None en caso contrario
+    (código incorrecto, expirado o ya usado).
+    """
+    now_str = datetime.now().isoformat()
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT * FROM users
+            WHERE link_code = ?
+              AND link_code_expiry IS NOT NULL
+              AND link_code_expiry > ?
+            """,
+            (code, now_str),
+        ).fetchone()
+    return _row_to_user(row) if row is not None else None
 
 
 def get_dominated_concepts(user_id: int = 1) -> list[Concept]:

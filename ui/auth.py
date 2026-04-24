@@ -17,14 +17,102 @@ El campo learning_area se guarda como string separado por comas.
 El campo tech_level se guarda como JSON serializado: {"área": "nivel", …}.
 
 Nunca almacena ni registra contraseñas en texto plano.
+
+Sprint 23 — persistencia de sesión
+-----------------------------------
+Al hacer login o registro exitoso, se guardan en st.session_state:
+  user_id        : int   — ID del usuario autenticado.
+  username       : str   — nombre de usuario.
+  session_expiry : float — timestamp UNIX de expiración (ahora + 3600 s).
+
+Funciones auxiliares:
+  is_session_valid()  — True si hay user_id y la sesión no ha expirado.
+  refresh_session()   — renueva session_expiry si quedan < 5 min para expirar.
 """
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from db.models import User
+
+_SESSION_TTL     = 3600   # segundos de vida de la sesión
+_REFRESH_MARGIN  = 300    # renovar si quedan menos de 5 minutos
+
+
+# ── Sprint 23: helpers de sesión ──────────────────────────────────────────────
+
+def is_session_valid() -> bool:
+    """
+    Indica si existe una sesión de usuario activa y no expirada.
+
+    Comprueba dos condiciones en st.session_state:
+    1. La clave 'user_id' existe y es un entero positivo.
+    2. La clave 'session_expiry' existe y su valor (timestamp UNIX)
+       es mayor que el momento actual.
+
+    Devuelve
+    --------
+    True  si ambas condiciones se cumplen.
+    False en cualquier otro caso (sin sesión, sesión expirada, etc.).
+    """
+    import streamlit as st
+
+    user_id = st.session_state.get("user_id")
+    expiry  = st.session_state.get("session_expiry")
+
+    if not user_id or expiry is None:
+        return False
+    return time.time() < expiry
+
+
+def refresh_session() -> bool:
+    """
+    Renueva silenciosamente la sesión si está próxima a expirar.
+
+    Solo actúa cuando quedan menos de _REFRESH_MARGIN segundos para
+    que expire la sesión (session_expiry - now < 300 s).  En ese caso
+    extiende session_expiry en _SESSION_TTL segundos desde el momento
+    actual.
+
+    Devuelve
+    --------
+    True  si se renovó la sesión.
+    False si no había sesión que renovar o si aún no era necesario.
+    """
+    import streamlit as st
+
+    expiry = st.session_state.get("session_expiry")
+    if expiry is None:
+        return False
+
+    now = time.time()
+    if expiry - now < _REFRESH_MARGIN:
+        st.session_state["session_expiry"] = now + _SESSION_TTL
+        return True
+    return False
+
+
+def _register_session(user: "User") -> None:
+    """
+    Registra los campos de sesión en st.session_state tras un login exitoso.
+
+    Llamada internamente por render_login_page() al autenticar o crear un
+    usuario.  Separa la lógica de sesión del código de UI para poder
+    testarla de forma aislada.
+
+    Parámetros
+    ----------
+    user : User autenticado o recién creado.
+    """
+    import streamlit as st
+
+    st.session_state["user"]           = user
+    st.session_state["user_id"]        = user.id
+    st.session_state["username"]       = user.username
+    st.session_state["session_expiry"] = time.time() + _SESSION_TTL
 
 
 def render_login_page() -> "User | None":
@@ -142,7 +230,7 @@ def render_login_page() -> "User | None":
                     if user is None:
                         st.error("Usuario o contraseña incorrectos. Inténtalo de nuevo.")
                     else:
-                        st.session_state["user"] = user
+                        _register_session(user)
                         st.success(f"¡Bienvenido, {user.username}!")
                         st.rerun()
 
@@ -187,7 +275,7 @@ def render_login_page() -> "User | None":
                 else:
                     try:
                         user = create_user(username_reg.strip(), password_reg)
-                        st.session_state["user"] = user
+                        _register_session(user)
                         st.success(
                             f"¡Cuenta creada! Bienvenido, {user.username}."
                         )

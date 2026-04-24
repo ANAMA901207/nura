@@ -50,6 +50,32 @@ nura/
 > o actualiza el documento de cierre correspondiente antes de reportar los
 > passed.
 
+### Requirements
+
+Cada vez que se instale una dependencia nueva, agregarla inmediatamente a
+`requirements.txt` con su versión exacta y un comentario explicando para qué
+sirve. Verificar con `pip freeze` la versión instalada antes de escribirla.
+
+```
+# Ejemplo:
+psycopg2-binary==2.9.10   # driver PostgreSQL para conexión a Supabase
+```
+
+**Regla:** ningún sprint que instale paquetes nuevos se considera cerrado sin
+actualizar `requirements.txt`.
+
+### Cierre de sprint
+
+Al cerrar cada sprint, Cursor debe crear automáticamente `docs/sprintN_close.md`
+con:
+
+- **Resultado del harness** — `X passed, Y failed, 0 regressions`.
+- **Archivos modificados** — tabla con cada archivo y descripción del cambio.
+- **Estado del proyecto actualizado** — resumen de lo construido y notas de
+  despliegue si aplica.
+
+Esto es obligatorio — ningún sprint se considera cerrado sin su close doc.
+
 ### Stack
 - Python 3.14
 - LangGraph 1.1.4

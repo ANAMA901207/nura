@@ -72,6 +72,16 @@ _SPRINT15_USER_MIGRATIONS = [
     ("tech_level",    "TEXT NOT NULL DEFAULT ''"),
 ]
 
+_SPRINT24_USER_MIGRATIONS = [
+    ("daily_goal", "INTEGER NOT NULL DEFAULT 3"),
+]
+
+_SPRINT25_USER_MIGRATIONS = [
+    ("telegram_id",       "TEXT"),
+    ("link_code",         "TEXT"),
+    ("link_code_expiry",  "TEXT"),
+]
+
 # Ruta al archivo SQLite.  Sobreescribible desde tests para usar BDs temporales.
 DB_PATH: Path = Path(__file__).parent / "nura.db"
 
@@ -524,13 +534,17 @@ def _init_db_postgresql() -> None:
         with raw.cursor() as cur:
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS users (
-                    id            SERIAL PRIMARY KEY,
-                    username      TEXT NOT NULL UNIQUE,
-                    password_hash TEXT NOT NULL,
-                    created_at    TEXT NOT NULL,
-                    profession    TEXT NOT NULL DEFAULT '',
-                    learning_area TEXT NOT NULL DEFAULT '',
-                    tech_level    TEXT NOT NULL DEFAULT ''
+                    id               SERIAL PRIMARY KEY,
+                    username         TEXT NOT NULL UNIQUE,
+                    password_hash    TEXT NOT NULL,
+                    created_at       TEXT NOT NULL,
+                    profession       TEXT NOT NULL DEFAULT '',
+                    learning_area    TEXT NOT NULL DEFAULT '',
+                    tech_level       TEXT NOT NULL DEFAULT '',
+                    daily_goal       INTEGER NOT NULL DEFAULT 3,
+                    telegram_id      TEXT,
+                    link_code        TEXT,
+                    link_code_expiry TEXT
                 )
             """)
             cur.execute("""
@@ -641,6 +655,14 @@ def _run_migrations_postgresql() -> None:
                 cur.execute(
                     f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {defn}"
                 )
+            for col, defn in _SPRINT24_USER_MIGRATIONS:
+                cur.execute(
+                    f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {defn}"
+                )
+            for col, defn in _SPRINT25_USER_MIGRATIONS:
+                cur.execute(
+                    f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {defn}"
+                )
             # Índices (idempotentes por IF NOT EXISTS)
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_concepts_user_id ON concepts(user_id)"
@@ -707,15 +729,33 @@ def _run_migrations_sqlite() -> None:
         # ── Sprint 11: tabla users ─────────────────────────────────────────────
         conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
-                id            INTEGER PRIMARY KEY AUTOINCREMENT,
-                username      TEXT    NOT NULL UNIQUE,
-                password_hash TEXT    NOT NULL,
-                created_at    TEXT    NOT NULL
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                username         TEXT    NOT NULL UNIQUE,
+                password_hash    TEXT    NOT NULL,
+                created_at       TEXT    NOT NULL,
+                daily_goal       INTEGER NOT NULL DEFAULT 3,
+                telegram_id      TEXT,
+                link_code        TEXT,
+                link_code_expiry TEXT
             )
         """)
 
         # ── Sprint 15: perfil de onboarding en users ─────────────────────────
         for col, definition in _SPRINT15_USER_MIGRATIONS:
+            try:
+                conn.execute(f"ALTER TABLE users ADD COLUMN {col} {definition}")
+            except sqlite3.OperationalError:
+                pass
+
+        # ── Sprint 24: meta diaria ────────────────────────────────────────────
+        for col, definition in _SPRINT24_USER_MIGRATIONS:
+            try:
+                conn.execute(f"ALTER TABLE users ADD COLUMN {col} {definition}")
+            except sqlite3.OperationalError:
+                pass
+
+        # ── Sprint 25: campos Telegram ────────────────────────────────────────
+        for col, definition in _SPRINT25_USER_MIGRATIONS:
             try:
                 conn.execute(f"ALTER TABLE users ADD COLUMN {col} {definition}")
             except sqlite3.OperationalError:

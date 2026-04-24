@@ -61,18 +61,21 @@ from db.operations import (
     get_concept_by_id,
     get_concept_connections_detail,
     get_concepts_due_today,
+    get_daily_goal,
     get_dominated_concepts,
     get_mastery_by_category,
     get_neglected_concepts,
     get_or_create_daily_summary,
     get_streak,
+    get_today_count,
     get_unclassified_concepts,
     get_weekly_insight_data,
     record_flashcard_result,
+    update_daily_goal,
     update_daily_summary,
 )
 from agents.graph import build_graph
-from ui.auth import render_login_page, render_onboarding
+from ui.auth import render_login_page, render_onboarding, is_session_valid, refresh_session
 from ui.components import (
     render_concept_card,
     render_concept_detail_panel,
@@ -85,6 +88,7 @@ from ui.components import (
     render_motivational_toast,
     render_quiz,
     render_sources,
+    render_streak,
 )
 
 # ── Design tokens (v0 reference) ──────────────────────────────────────────────
@@ -611,6 +615,14 @@ def _render_view_descubrir() -> None:
         unsafe_allow_html=True,
     )
 
+    # ── Sprint 24: streak y progreso de meta diaria ────────────────────────────
+    _uid_desc = _current_user_id()
+    render_streak(
+        streak=get_streak(_uid_desc),
+        today=get_today_count(_uid_desc),
+        goal=get_daily_goal(_uid_desc),
+    )
+
     with st.form(key="chat_form", clear_on_submit=True):
         col_input, col_btn = st.columns([5, 1])
         with col_input:
@@ -629,6 +641,10 @@ def _render_view_descubrir() -> None:
             try:
                 _handle_submit(user_input.strip())
                 _status.update(label="✓ Listo", state="complete", expanded=False)
+                # Sprint 24: toast si se acaba de completar la meta diaria
+                _uid_after = _current_user_id()
+                if get_today_count(_uid_after) >= get_daily_goal(_uid_after):
+                    st.toast("¡Meta del día cumplida! 🔥")
             except Exception as exc:
                 _status.update(label="Error al procesar", state="error")
                 st.error(f"Error al procesar: {exc}")
@@ -1855,6 +1871,24 @@ def main() -> None:
 
     _init_session()
 
+    # ── Verificación y refresh de sesión (Sprint 23) ───────────────────────────
+    # Flujo al inicio de cada rerun:
+    #   1. Si la sesión es válida (user_id presente y no expirada) → continuar.
+    #      Además, si está próxima a expirar se renueva silenciosamente.
+    #   2. Si hay user_id pero la sesión expiró → intentar refresh automático.
+    #      Si el refresh falla (no hay session_expiry) → mostrar login.
+    #   3. Sin sesión → mostrar login.
+    _has_user_id = bool(st.session_state.get("user_id"))
+    if _has_user_id:
+        if is_session_valid():
+            refresh_session()           # renovar si queda poco tiempo
+        else:
+            # Expiró: intentar refresh; si no hay expiry → limpiar sesión
+            refreshed = refresh_session()
+            if not refreshed:
+                for _k in list(st.session_state.keys()):
+                    del st.session_state[_k]
+
     # ── Autenticación (Sprint 11) ──────────────────────────────────────────────
     if st.session_state.get("user") is None:
         render_login_page()
@@ -2042,6 +2076,17 @@ def main() -> None:
                     index=_level_idx,
                     key="sp_level",
                 )
+                # Sprint 24: meta diaria configurable
+                _cur_goal = get_daily_goal(_uid_sidebar)
+                _new_goal = st.number_input(
+                    "Meta diaria de conceptos",
+                    min_value=1,
+                    max_value=50,
+                    value=_cur_goal,
+                    step=1,
+                    key="sp_daily_goal",
+                )
+
                 if st.form_submit_button("Guardar", use_container_width=True, type="primary"):
                     _save_areas = _new_areas if _new_areas else [_area_opts[0]]
                     _save_tech  = _json.dumps(
@@ -2053,6 +2098,7 @@ def main() -> None:
                         learning_area=", ".join(_save_areas),
                         tech_level=_save_tech,
                     )
+                    update_daily_goal(_uid_sidebar, int(_new_goal))
                     st.session_state["user"] = _updated
                     st.session_state.user_profile = {
                         "profession":    _new_prof,
@@ -2061,6 +2107,29 @@ def main() -> None:
                     }
                     st.success("Perfil actualizado.")
                     st.rerun()
+
+        # ── Vincular Telegram (Sprint 25) ─────────────────────────────────────
+        with st.expander("Vincular Telegram"):
+            st.markdown(
+                "<p style='color:#a6adc8; font-size:0.85rem; margin-bottom:0.75rem;'>"
+                "Genera un código y envíalo al bot de Nura en Telegram.</p>",
+                unsafe_allow_html=True,
+            )
+            if st.button("Generar código de vinculación", key="btn_tg_link",
+                         use_container_width=True):
+                from bot.nura_bridge import generate_link_code as _gen_code
+                _code = _gen_code(_uid_sidebar)
+                st.session_state["_tg_link_code"] = _code
+
+            if st.session_state.get("_tg_link_code"):
+                _c = st.session_state["_tg_link_code"]
+                st.code(f"/vincular {_c}", language=None)
+                st.markdown(
+                    "<p style='color:#6c7086; font-size:0.8rem;'>"
+                    "Copia este comando y envíalo al bot de Nura en Telegram. "
+                    "El código expira en 10 minutos.</p>",
+                    unsafe_allow_html=True,
+                )
 
         # ── Streak indicator ──────────────────────────────────────────────────
         st.markdown(

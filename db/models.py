@@ -178,3 +178,5 @@ class User:
     profession:    str = ""
     learning_area: str = ""
     tech_level:    str = ""
+    # Sprint 24: meta de conceptos por día (configurable por el usuario)
+    daily_goal:    int = 3

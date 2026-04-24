@@ -1153,3 +1153,50 @@ def render_diagram(svg_html: str) -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+def render_streak(streak: int, today: int, goal: int) -> None:
+    """
+    Muestra el streak de días consecutivos y la barra de progreso de la meta diaria.
+
+    Sprint 24: componente visual que aparece al inicio de la vista Descubrir.
+
+    Elementos que renderiza
+    -----------------------
+    - Contador de streak con ícono de fuego 🔥 y texto "N día(s) seguido(s)".
+    - Barra de progreso nativa de Streamlit: min(today/goal, 1.0).
+    - Texto auxiliar "X de Y conceptos hoy".
+
+    Parámetros
+    ----------
+    streak : Días consecutivos con al menos 1 concepto capturado.
+    today  : Conceptos capturados el día de hoy.
+    goal   : Meta diaria configurada por el usuario.
+    """
+    import streamlit as st
+
+    goal = max(1, goal)   # evitar división por cero
+    progress = min(today / goal, 1.0)
+
+    dias_label = "día" if streak == 1 else "días"
+    conceptos_label = "concepto" if today == 1 else "conceptos"
+
+    st.markdown(
+        f"""
+        <div style="display:flex; align-items:center; gap:0.5rem;
+                    padding:0.6rem 0.9rem; border-radius:10px;
+                    background:#313244; margin-bottom:0.75rem;
+                    border:1px solid #45475a;">
+          <span style="font-size:1.3rem; line-height:1;">🔥</span>
+          <span style="font-size:0.95rem; font-weight:700; color:#fab387;">
+            {streak} {dias_label} seguido{"s" if streak != 1 else ""}
+          </span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.progress(
+        progress,
+        text=f"{today} de {goal} {conceptos_label} hoy",
+    )

@@ -31,3 +31,10 @@ ddgs==9.13.0
 # Conector PostgreSQL para Supabase (Sprint 22)
 # Solo se usa cuando DATABASE_URL está definida en .env
 psycopg2-binary==2.9.11
+
+
+# Bot de Telegram (Sprint 25)
+python-telegram-bot==21.6
+fastapi==0.115.0
+uvicorn==0.32.0
+httpx==0.27.0
