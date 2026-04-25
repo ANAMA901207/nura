@@ -3,31 +3,33 @@ bot/handlers.py
 ===============
 Lógica de negocio de cada comando del bot de Nura en Telegram.
 
-Diseño
-------
-- Cada función `handle_*` recibe el telegram_id (y datos adicionales) y
-  devuelve una cadena de texto lista para enviar como respuesta.
-- `process_update(update)` actúa como router: detecta el tipo de mensaje
-  (comando vs. texto libre) y delega a la función correcta.
-- Ninguna función llama directamente a la API de Telegram: eso lo hace
-  `bot/main.py` con el resultado que devuelven estas funciones.
-
-Esta separación hace que los handlers sean 100% testeables sin red.
+Diseño async (Sprint 25 fix)
+-----------------------------
+- `process_update`, `handle_capturar` y `handle_free_message` son `async`
+  para que puedan usar `asyncio.to_thread(run_tutor, ...)` y nunca bloquear
+  el event loop de FastAPI mientras Gemini genera la respuesta.
+- Los handlers rápidos (streak, meta, repasar, start, vincular) siguen siendo
+  síncronos: no llaman a la IA y terminan en milisegundos.
+- `main.py` llama a `process_update` desde una tarea de fondo
+  (`asyncio.create_task`) para que `/webhook` retorne < 2 s.
+- Los tests unitarios envuelven las llamadas async con `asyncio.run()`.
 """
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 
-# ── Router principal ──────────────────────────────────────────────────────────
+# ── Router principal (async) ──────────────────────────────────────────────────
 
-def process_update(update: dict) -> dict:
+async def process_update(update: dict) -> dict:
     """
-    Router que procesa un update de Telegram y devuelve la respuesta.
+    Router async que procesa un update de Telegram y devuelve la respuesta.
 
     Lee el mensaje del update, detecta si es un comando (empieza con '/')
-    y despacha a la función handler correspondiente.
+    y delega a la función handler correspondiente.  Los handlers que invocan
+    la IA son awaited; los rápidos se llaman directamente.
 
     Parámetros
     ----------
@@ -59,7 +61,7 @@ def process_update(update: dict) -> dict:
 
     elif text.startswith("/capturar"):
         term = text[len("/capturar"):].strip()
-        response = handle_capturar(telegram_id, term)
+        response = await handle_capturar(telegram_id, term)      # async: llama IA
 
     elif text.startswith("/repasar"):
         response = handle_repasar(telegram_id)
@@ -81,8 +83,7 @@ def process_update(update: dict) -> dict:
         response = "Comando no reconocido. Escribe /start para ver las opciones."
 
     else:
-        # Mensaje libre → tutor
-        response = handle_free_message(telegram_id, text)
+        response = await handle_free_message(telegram_id, text)  # async: llama IA
 
     return {"chat_id": chat_id, "text": response, "handled": True}
 
@@ -90,7 +91,7 @@ def process_update(update: dict) -> dict:
 # ── Handlers individuales ─────────────────────────────────────────────────────
 
 def _get_linked_user(telegram_id: int | str):
-    """Helper: devuelve el User vinculado o None."""
+    """Helper síncrono: devuelve el User vinculado o None."""
     from bot.nura_bridge import get_user_by_telegram_id
     return get_user_by_telegram_id(telegram_id)
 
@@ -125,12 +126,14 @@ def handle_start(telegram_id: int | str, username: str) -> str:
     )
 
 
-def handle_capturar(telegram_id: int | str, texto: str) -> str:
+async def handle_capturar(telegram_id: int | str, texto: str) -> str:
     """
-    Captura un concepto nuevo invocando el grafo de Nura.
+    Captura un concepto nuevo invocando el grafo de Nura en un hilo separado.
 
-    Si el usuario no está vinculado, le pide que lo haga primero.
-    Si no se proporcionó texto, pide el término.
+    Usa `asyncio.to_thread` para ejecutar `run_tutor` (síncrona, puede tardar
+    30+ s con Gemini) sin bloquear el event loop de FastAPI.
+
+    Si el usuario no está vinculado, retorna inmediatamente sin llamar a la IA.
     """
     user = _get_linked_user(telegram_id)
     if user is None:
@@ -140,7 +143,7 @@ def handle_capturar(telegram_id: int | str, texto: str) -> str:
         return "¿Qué término quieres capturar? Usa: `/capturar [término]`"
 
     from bot.nura_bridge import run_tutor
-    respuesta = run_tutor(user.id, texto)
+    respuesta = await asyncio.to_thread(run_tutor, user.id, texto)
     return f"✅ Concepto capturado:\n\n{respuesta}"
 
 
@@ -182,7 +185,6 @@ def handle_streak(telegram_id: int | str) -> str:
     goal    = get_daily_goal(user.id)
     pct     = min(int(today / max(goal, 1) * 100), 100)
     dias    = "día" if streak == 1 else "días"
-
     barra   = "█" * (pct // 10) + "░" * (10 - pct // 10)
 
     return (
@@ -232,16 +234,19 @@ def handle_vincular(telegram_id: int | str, code: str) -> str:
     return "❌ Código incorrecto o expirado. Genera uno nuevo desde la app."
 
 
-def handle_free_message(telegram_id: int | str, texto: str) -> str:
+async def handle_free_message(telegram_id: int | str, texto: str) -> str:
     """
     Envía un mensaje libre al tutor de Nura con el contexto completo del usuario.
+
+    Usa `asyncio.to_thread` para que la llamada a Gemini (síncrona, lenta)
+    no bloquee el event loop de FastAPI.
     """
     user = _get_linked_user(telegram_id)
     if user is None:
         return _msg_no_vinculado()
 
     from bot.nura_bridge import run_tutor
-    return run_tutor(user.id, texto)
+    return await asyncio.to_thread(run_tutor, user.id, texto)
 
 
 def _msg_no_vinculado() -> str:

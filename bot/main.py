@@ -6,7 +6,20 @@ Aplicación FastAPI que expone el webhook de Telegram para el bot de Nura.
 Endpoints
 ---------
 GET  /health   → {"status": "ok"}  (healthcheck para Railway/uptime monitors)
-POST /webhook  → recibe updates de Telegram y los despacha a handlers.process_update()
+POST /webhook  → retorna {"ok": True} en < 2 s y procesa en background
+
+Flujo del webhook (fix anti-loop, Sprint 25)
+---------------------------------------------
+Telegram reenvía el mismo update si no recibe respuesta en ~30 s.
+Para evitar el loop cuando Gemini tarda 30-60 s:
+
+1. /webhook parsea el JSON del update.
+2. Lanza asyncio.create_task(_process_and_send(token, update)).
+3. Retorna JSONResponse({"ok": True}) INMEDIATAMENTE (< 2 s).
+4. La tarea de fondo ejecuta process_update (async), que a su vez
+   llama a handle_capturar / handle_free_message usando asyncio.to_thread
+   para no bloquear el event loop mientras Gemini responde.
+5. Cuando termina, _send_message envía la respuesta al usuario.
 
 Startup
 -------
@@ -14,20 +27,19 @@ Al arrancar, registra el webhook con la API de Telegram usando:
   - TELEGRAM_TOKEN  : token del bot (BotFather).
   - WEBHOOK_URL     : URL pública donde Telegram enviará los updates.
 
-Ambas variables se leen del entorno (cargado desde .env con python-dotenv).
-
 Si TELEGRAM_TOKEN o WEBHOOK_URL no están definidas, la app arranca igual
 pero no registra el webhook (útil para tests locales y CI).
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
-from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
@@ -94,26 +106,41 @@ async def health() -> JSONResponse:
 
 
 @app.post("/webhook")
-async def webhook(request: Request) -> Response:
+async def webhook(request: Request) -> JSONResponse:
     """
-    Recibe un update de Telegram (JSON), lo procesa y envía la respuesta.
+    Recibe un update de Telegram y retorna {"ok": True} inmediatamente.
 
-    Telegram espera siempre un 200 OK aunque no se envíe respuesta, para
-    no reintentar el mismo update indefinidamente.
+    El procesamiento real (que puede tardar 30-60 s si invoca Gemini) se
+    ejecuta en una tarea de fondo con asyncio.create_task().  Así Telegram
+    recibe el 200 en < 2 s y no reenvía el update.
     """
-    token = os.environ.get("TELEGRAM_TOKEN", "")
-
     try:
         update = await request.json()
     except Exception:
-        return Response(status_code=200)
+        return JSONResponse({"ok": True})
 
-    result = process_update(update)
+    token = os.environ.get("TELEGRAM_TOKEN", "")
+    asyncio.create_task(_process_and_send(token, update))
 
-    if result.get("handled") and result.get("chat_id") and token:
-        await _send_message(token, result["chat_id"], result["text"])
+    return JSONResponse({"ok": True})
 
-    return Response(status_code=200)
+
+# ── Background task ───────────────────────────────────────────────────────────
+
+async def _process_and_send(token: str, update: dict) -> None:
+    """
+    Tarea de fondo: procesa el update y envía la respuesta a Telegram.
+
+    Llama a process_update (async) que internamente usa asyncio.to_thread
+    para los handlers lentos (Gemini), manteniendo el event loop libre.
+    Los errores se registran en consola sin propagar excepciones.
+    """
+    try:
+        result = await process_update(update)
+        if result.get("handled") and result.get("chat_id") and token:
+            await _send_message(token, result["chat_id"], result["text"])
+    except Exception as exc:
+        print(f"[NuraBot] Error en background task: {exc}")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -134,11 +161,16 @@ async def _send_message(token: str, chat_id: int, text: str) -> None:
     }
     try:
         async with httpx.AsyncClient() as client:
-            await client.post(url, json=payload, timeout=10)
+            await client.post(url, json=payload, timeout=30)
     except Exception as exc:
         print(f"[NuraBot] Error al enviar mensaje a {chat_id}: {exc}")
 
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("bot.main:app", host="0.0.0.0", port=int(os.environ.get("PORT", 8000)), reload=False)
+    uvicorn.run(
+        "bot.main:app",
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", 8000)),
+        reload=False,
+    )

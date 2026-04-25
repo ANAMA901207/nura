@@ -6,6 +6,13 @@ Harness para Sprint 25 — Bot de Telegram con FastAPI.
 Todos los tests usan mocks para aislar completamente las dependencias
 externas (Telegram API, BD, LangGraph).  No se necesita red ni servidor real.
 
+Nota sobre async
+----------------
+process_update, handle_free_message y handle_capturar son funciones async
+(fix anti-loop: el webhook retorna inmediatamente y procesa en background).
+Los tests que las invocan directamente usan asyncio.run() para ejecutarlas
+sin necesitar pytest-asyncio.
+
 Casos
 -----
 1. test_health_endpoint_returns_ok
@@ -25,6 +32,8 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import asyncio
 
 import pytest
 
@@ -82,6 +91,7 @@ def test_health_endpoint_returns_ok():
 def test_free_message_routes_to_tutor():
     """
     Un mensaje sin '/' que no es un comando debe ser manejado por handle_free_message.
+    process_update es async — se invoca con asyncio.run().
     """
     update = _make_tg_update("¿qué es la amortización?", telegram_id=42)
 
@@ -93,7 +103,7 @@ def test_free_message_routes_to_tutor():
         patch("bot.nura_bridge.run_tutor", return_value=tutor_response),
     ):
         from bot.handlers import process_update
-        result = process_update(update)
+        result = asyncio.run(process_update(update))
 
     assert result["handled"] is True
     assert tutor_response in result["text"]
@@ -105,6 +115,7 @@ def test_capturar_command_detected():
     """
     El texto '/capturar LangGraph' debe ser despachado a handle_capturar
     y devolver una respuesta que confirma la captura.
+    process_update es async — se invoca con asyncio.run().
     """
     update = _make_tg_update("/capturar LangGraph", telegram_id=42)
 
@@ -116,7 +127,7 @@ def test_capturar_command_detected():
         patch("bot.nura_bridge.run_tutor", return_value=tutor_response),
     ):
         from bot.handlers import process_update
-        result = process_update(update)
+        result = asyncio.run(process_update(update))
 
     assert result["handled"] is True
     assert "LangGraph" in result["text"] or "capturado" in result["text"].lower()
@@ -128,6 +139,7 @@ def test_streak_command_detected():
     """
     El texto '/streak' debe ser despachado a handle_streak y devolver
     información sobre la racha del usuario.
+    process_update es async — se invoca con asyncio.run().
     """
     update = _make_tg_update("/streak", telegram_id=42)
 
@@ -140,7 +152,7 @@ def test_streak_command_detected():
         patch("db.operations.get_daily_goal",   return_value=3),
     ):
         from bot.handlers import process_update
-        result = process_update(update)
+        result = asyncio.run(process_update(update))
 
     assert result["handled"] is True
     text = result["text"]
@@ -155,12 +167,13 @@ def test_unlinked_user_gets_prompt():
     """
     Un telegram_id que no está vinculado debe recibir instrucciones
     de cómo vincular su cuenta, no un error.
+    process_update es async — se invoca con asyncio.run().
     """
     update = _make_tg_update("hola", telegram_id=999)
 
     with patch("bot.handlers._get_linked_user", return_value=None):
         from bot.handlers import process_update
-        result = process_update(update)
+        result = asyncio.run(process_update(update))
 
     assert result["handled"] is True
     text = result["text"].lower()
