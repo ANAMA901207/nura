@@ -24,6 +24,11 @@
 - **NUNCA** hardcodear API keys — siempre usar `.env`
 - **SIEMPRE** usar queries parametrizadas — nunca f-strings 
   en SQL
+- **NUNCA** trackear archivos de caché o compilados.
+  El `.gitignore` debe siempre incluir:
+  `__pycache__/`, `*.pyc`, `*.pyo`, `.env`
+  Verificar que estos patrones estén presentes en `.gitignore`
+  al cerrar cada sprint.
 
 ### Estructura de carpetas
 
