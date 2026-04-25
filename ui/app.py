@@ -65,6 +65,8 @@ from db.operations import (
     get_dominated_concepts,
     get_mastery_by_category,
     get_neglected_concepts,
+    get_reminder_time,
+    set_reminder_time,
     get_or_create_daily_summary,
     get_streak,
     get_today_count,
@@ -2087,6 +2089,16 @@ def main() -> None:
                     key="sp_daily_goal",
                 )
 
+                # Sprint 26: hora de recordatorio diario por Telegram
+                import datetime as _dt
+                _cur_reminder = get_reminder_time(_uid_sidebar)
+                _rh, _rm = (int(x) for x in _cur_reminder.split(":"))
+                _new_reminder = st.time_input(
+                    "Hora de recordatorio (Telegram)",
+                    value=_dt.time(_rh, _rm),
+                    key="sp_reminder_time",
+                )
+
                 if st.form_submit_button("Guardar", use_container_width=True, type="primary"):
                     _save_areas = _new_areas if _new_areas else [_area_opts[0]]
                     _save_tech  = _json.dumps(
@@ -2099,6 +2111,10 @@ def main() -> None:
                         tech_level=_save_tech,
                     )
                     update_daily_goal(_uid_sidebar, int(_new_goal))
+                    set_reminder_time(
+                        _uid_sidebar,
+                        _new_reminder.strftime("%H:%M"),
+                    )
                     st.session_state["user"] = _updated
                     st.session_state.user_profile = {
                         "profession":    _new_prof,

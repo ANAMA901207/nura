@@ -168,6 +168,10 @@ def _row_to_user(row: Any) -> User:
         learning_area=row["learning_area"] if "learning_area" in keys else "",
         tech_level=row["tech_level"]    if "tech_level"    in keys else "",
         daily_goal=int(row["daily_goal"]) if "daily_goal" in keys else 3,
+        telegram_id=row["telegram_id"]           if "telegram_id"      in keys else None,
+        link_code=row["link_code"]               if "link_code"        in keys else None,
+        link_code_expiry=row["link_code_expiry"] if "link_code_expiry" in keys else None,
+        reminder_time=row["reminder_time"]       if "reminder_time"    in keys else "20:00",
     )
 
 
@@ -1669,3 +1673,98 @@ def get_session_stats(user_id: int = 1) -> dict:
         "es_primera_sesion": es_primera_sesion,
         "quiz_score":        None,
     }
+
+
+# ── Sprint 26: recordatorios automáticos por Telegram ─────────────────────────
+
+import re as _re
+
+
+def get_reminder_time(user_id: int) -> str:
+    """
+    Devuelve la hora configurada de recordatorio diario del usuario.
+
+    Parámetros
+    ----------
+    user_id : ID del usuario en Nura.
+
+    Devuelve
+    --------
+    str — hora en formato "HH:MM". Retorna "20:00" si el campo no existe.
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT reminder_time FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+    if row is None:
+        return "20:00"
+    val = row[0] if hasattr(row, "__getitem__") and not hasattr(row, "keys") else (
+        row["reminder_time"] if "reminder_time" in row.keys() else None
+    )
+    return val if val else "20:00"
+
+
+def set_reminder_time(user_id: int, time_str: str) -> None:
+    """
+    Guarda la hora de recordatorio del usuario después de validar el formato HH:MM.
+
+    Parámetros
+    ----------
+    user_id  : ID del usuario en Nura.
+    time_str : Cadena en formato "HH:MM" (00:00 – 23:59).
+
+    Lanza
+    -----
+    ValueError : Si time_str no cumple el formato HH:MM o la hora/minuto están
+                 fuera de rango.
+    """
+    if not _re.fullmatch(r"\d{2}:\d{2}", time_str):
+        raise ValueError(f"Formato inválido: '{time_str}'. Se esperaba HH:MM.")
+    hh, mm = int(time_str[:2]), int(time_str[3:])
+    if hh > 23 or mm > 59:
+        raise ValueError(
+            f"Hora fuera de rango: '{time_str}'. HH 00-23, MM 00-59."
+        )
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE users SET reminder_time = ? WHERE id = ?",
+            (time_str, user_id),
+        )
+
+
+def get_users_to_remind(current_time_str: str) -> "list[User]":
+    """
+    Devuelve la lista de usuarios que deben recibir el recordatorio ahora.
+
+    Un usuario se incluye si:
+      (a) tiene telegram_id vinculado (no nulo, no vacío),
+      (b) su reminder_time coincide con current_time_str,
+      (c) el número de conceptos capturados hoy es menor que su daily_goal.
+
+    Parámetros
+    ----------
+    current_time_str : Hora actual en formato "HH:MM".
+
+    Devuelve
+    --------
+    list[User] — puede ser vacía.
+    """
+    today_str = date.today().isoformat()
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT u.*
+            FROM   users u
+            WHERE  u.telegram_id IS NOT NULL
+              AND  u.telegram_id  != ''
+              AND  u.reminder_time = ?
+              AND  (
+                SELECT COUNT(*)
+                FROM   concepts c
+                WHERE  c.user_id = u.id
+                  AND  SUBSTR(c.created_at, 1, 10) = ?
+              ) < u.daily_goal
+            """,
+            (current_time_str, today_str),
+        ).fetchall()
+    return [_row_to_user(r) for r in rows]

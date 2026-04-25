@@ -79,6 +79,11 @@ async def process_update(update: dict) -> dict:
         code = parts[1] if len(parts) > 1 else ""
         response = handle_vincular(telegram_id, code)
 
+    elif text.startswith("/recordatorio"):
+        parts = text.split()
+        time_str = parts[1] if len(parts) > 1 else ""
+        response = handle_recordatorio(telegram_id, time_str)
+
     elif text.startswith("/"):
         response = "Comando no reconocido. Escribe /start para ver las opciones."
 
@@ -232,6 +237,32 @@ def handle_vincular(telegram_id: int | str, code: str) -> str:
     if ok:
         return "✅ ¡Cuenta vinculada con éxito! Ya puedes usar todos los comandos de Nura."
     return "❌ Código incorrecto o expirado. Genera uno nuevo desde la app."
+
+
+def handle_recordatorio(telegram_id: int | str, time_str: str) -> str:
+    """
+    Configura la hora de recordatorio diario del usuario.
+
+    Valida el formato HH:MM antes de guardar. Responde con confirmación
+    o con un mensaje de error si el formato es inválido.
+    """
+    user = _get_linked_user(telegram_id)
+    if user is None:
+        return _msg_no_vinculado()
+
+    if not time_str:
+        return "Uso: `/recordatorio HH:MM`  Ejemplo: `/recordatorio 08:00`"
+
+    from db.operations import set_reminder_time
+    try:
+        set_reminder_time(user.id, time_str)
+    except ValueError:
+        return (
+            f"❌ Formato inválido: `{time_str}`. "
+            "Usa HH:MM (00:00 – 23:59).  Ejemplo: `/recordatorio 08:00`"
+        )
+
+    return f"✅ Te recordaré todos los días a las {time_str}."
 
 
 async def handle_free_message(telegram_id: int | str, texto: str) -> str:

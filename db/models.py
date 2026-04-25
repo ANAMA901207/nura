@@ -180,3 +180,9 @@ class User:
     tech_level:    str = ""
     # Sprint 24: meta de conceptos por día (configurable por el usuario)
     daily_goal:    int = 3
+    # Sprint 25: vinculación con Telegram
+    telegram_id:      Optional[str] = None
+    link_code:        Optional[str] = None
+    link_code_expiry: Optional[str] = None
+    # Sprint 26: hora de recordatorio diario
+    reminder_time: str = "20:00"

@@ -52,6 +52,7 @@ from dotenv import load_dotenv
 load_dotenv(_ROOT / ".env")
 
 from bot.handlers import process_update
+from bot.scheduler import run_scheduler
 
 _TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
 
@@ -87,8 +88,9 @@ async def _register_webhook() -> None:
 
 @asynccontextmanager
 async def _lifespan(application: FastAPI):
-    """Gestiona el ciclo de vida de la app: registra webhook al arrancar."""
+    """Gestiona el ciclo de vida de la app: registra webhook y lanza scheduler."""
     await _register_webhook()
+    asyncio.create_task(run_scheduler())
     yield
 
 

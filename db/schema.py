@@ -82,6 +82,10 @@ _SPRINT25_USER_MIGRATIONS = [
     ("link_code_expiry",  "TEXT"),
 ]
 
+_SPRINT26_USER_MIGRATIONS = [
+    ("reminder_time", "TEXT NOT NULL DEFAULT '20:00'"),
+]
+
 # Ruta al archivo SQLite.  Sobreescribible desde tests para usar BDs temporales.
 DB_PATH: Path = Path(__file__).parent / "nura.db"
 
@@ -544,7 +548,8 @@ def _init_db_postgresql() -> None:
                     daily_goal       INTEGER NOT NULL DEFAULT 3,
                     telegram_id      TEXT,
                     link_code        TEXT,
-                    link_code_expiry TEXT
+                    link_code_expiry TEXT,
+                    reminder_time    TEXT NOT NULL DEFAULT '20:00'
                 )
             """)
             cur.execute("""
@@ -663,6 +668,10 @@ def _run_migrations_postgresql() -> None:
                 cur.execute(
                     f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {defn}"
                 )
+            for col, defn in _SPRINT26_USER_MIGRATIONS:
+                cur.execute(
+                    f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {defn}"
+                )
             # Índices (idempotentes por IF NOT EXISTS)
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_concepts_user_id ON concepts(user_id)"
@@ -736,7 +745,8 @@ def _run_migrations_sqlite() -> None:
                 daily_goal       INTEGER NOT NULL DEFAULT 3,
                 telegram_id      TEXT,
                 link_code        TEXT,
-                link_code_expiry TEXT
+                link_code_expiry TEXT,
+                reminder_time    TEXT NOT NULL DEFAULT '20:00'
             )
         """)
 
@@ -756,6 +766,12 @@ def _run_migrations_sqlite() -> None:
 
         # ── Sprint 25: campos Telegram ────────────────────────────────────────
         for col, definition in _SPRINT25_USER_MIGRATIONS:
+            try:
+                conn.execute(f"ALTER TABLE users ADD COLUMN {col} {definition}")
+            except sqlite3.OperationalError:
+                pass
+
+        for col, definition in _SPRINT26_USER_MIGRATIONS:
             try:
                 conn.execute(f"ALTER TABLE users ADD COLUMN {col} {definition}")
             except sqlite3.OperationalError:
