@@ -38,3 +38,7 @@ python-telegram-bot==21.6
 fastapi==0.115.0
 uvicorn==0.32.0
 httpx>=0.28.1,<1.0.0
+
+# Text-to-Speech y conversión de audio (Sprint 27)
+gTTS==2.5.1        # genera MP3 desde texto sin API key
+pydub==0.25.1      # convierte MP3 → OGG/OPUS para sendVoice (requiere ffmpeg)

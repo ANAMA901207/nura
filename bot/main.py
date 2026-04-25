@@ -135,17 +135,47 @@ async def _process_and_send(token: str, update: dict) -> None:
 
     Llama a process_update (async) que internamente usa asyncio.to_thread
     para los handlers lentos (Gemini), manteniendo el event loop libre.
+
+    Si el resultado tiene type='voice' → usa sendVoice (OGG/OPUS).
+    Si no → usa sendMessage como siempre.
     Los errores se registran en consola sin propagar excepciones.
     """
     try:
         result = await process_update(update)
-        if result.get("handled") and result.get("chat_id") and token:
-            await _send_message(token, result["chat_id"], result["text"])
+        if not (result.get("handled") and result.get("chat_id") and token):
+            return
+
+        chat_id = result["chat_id"]
+
+        if result.get("type") == "voice" and result.get("audio_bytes"):
+            await _send_voice(token, chat_id, result["audio_bytes"])
+        elif result.get("text"):
+            await _send_message(token, chat_id, result["text"])
     except Exception as exc:
         print(f"[NuraBot] Error en background task: {exc}")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+async def _send_voice(token: str, chat_id: int, audio_bytes: bytes) -> None:
+    """
+    Envía una nota de voz OGG/OPUS a un chat de Telegram usando sendVoice.
+
+    Telegram reproduce OGG/OPUS nativamente sin que el usuario tenga que
+    descargar el archivo.  Los errores se registran en consola.
+    """
+    url = _TELEGRAM_API.format(token=token, method="sendVoice")
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                url,
+                data={"chat_id": str(chat_id)},
+                files={"voice": ("voice.ogg", audio_bytes, "audio/ogg")},
+                timeout=60,
+            )
+    except Exception as exc:
+        print(f"[NuraBot] Error al enviar voz a {chat_id}: {exc}")
+
 
 async def _send_message(token: str, chat_id: int, text: str) -> None:
     """

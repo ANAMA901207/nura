@@ -84,6 +84,21 @@ async def process_update(update: dict) -> dict:
         time_str = parts[1] if len(parts) > 1 else ""
         response = handle_recordatorio(telegram_id, time_str)
 
+    elif text.startswith("/podcast"):
+        user = _get_linked_user(telegram_id)
+        if user is None:
+            response = _msg_no_vinculado()
+        else:
+            return await handle_podcast(chat_id, user.id)   # retorna dict completo
+
+    elif text.startswith("/audio"):
+        user = _get_linked_user(telegram_id)
+        if user is None:
+            response = _msg_no_vinculado()
+        else:
+            term = text[len("/audio"):].strip()
+            return await handle_audio(chat_id, user.id, term)  # retorna dict completo
+
     elif text.startswith("/"):
         response = "Comando no reconocido. Escribe /start para ver las opciones."
 
@@ -263,6 +278,82 @@ def handle_recordatorio(telegram_id: int | str, time_str: str) -> str:
         )
 
     return f"✅ Te recordaré todos los días a las {time_str}."
+
+
+async def handle_podcast(telegram_id: int | str, user_id: int) -> dict:
+    """
+    Genera el resumen diario del usuario como nota de voz.
+
+    Llama a generate_podcast_text para construir el guión y text_to_speech
+    para convertirlo a OGG/OPUS.  Si TTS falla, hace fallback a texto.
+
+    Parámetros
+    ----------
+    telegram_id : ID de Telegram (= chat_id en chats privados).
+    user_id     : ID del usuario en Nura.
+
+    Devuelve
+    --------
+    dict con claves: chat_id, type ('voice'|'text'), audio_bytes o text, handled.
+    """
+    from bot.tts import text_to_speech, generate_podcast_text
+
+    text = generate_podcast_text(user_id)
+    try:
+        audio_bytes = await asyncio.to_thread(text_to_speech, text)
+        return {
+            "chat_id":     telegram_id,
+            "audio_bytes": audio_bytes,
+            "type":        "voice",
+            "handled":     True,
+        }
+    except Exception as exc:
+        print(f"[TTS] Fallback a texto en /podcast: {exc}")
+        return {"chat_id": telegram_id, "text": text, "type": "text", "handled": True}
+
+
+async def handle_audio(telegram_id: int | str, user_id: int, term: str) -> dict:
+    """
+    Explica un término como nota de voz.
+
+    Si term está vacío, retorna un mensaje de ayuda de inmediato.
+    Genera la explicación con el tutor y convierte a OGG/OPUS.
+    Si TTS falla, hace fallback a texto.
+
+    Parámetros
+    ----------
+    telegram_id : ID de Telegram (= chat_id en chats privados).
+    user_id     : ID del usuario en Nura.
+    term        : Término a explicar; vacío si el usuario no lo proporcionó.
+
+    Devuelve
+    --------
+    dict con claves: chat_id, type ('voice'|'text'), audio_bytes o text, handled.
+    """
+    if not term:
+        return {
+            "chat_id": telegram_id,
+            "text":    "¿Qué término quieres que te explique? Usa: `/audio LangGraph`",
+            "type":    "text",
+            "handled": True,
+        }
+
+    from bot.tts import text_to_speech, generate_audio_explanation
+
+    explanation = ""
+    try:
+        explanation = await asyncio.to_thread(generate_audio_explanation, user_id, term)
+        audio_bytes = await asyncio.to_thread(text_to_speech, explanation)
+        return {
+            "chat_id":     telegram_id,
+            "audio_bytes": audio_bytes,
+            "type":        "voice",
+            "handled":     True,
+        }
+    except Exception as exc:
+        print(f"[TTS] Fallback a texto en /audio: {exc}")
+        fallback = explanation or f"No pude generar la explicación de '{term}'."
+        return {"chat_id": telegram_id, "text": fallback, "type": "text", "handled": True}
 
 
 async def handle_free_message(telegram_id: int | str, texto: str) -> str:
