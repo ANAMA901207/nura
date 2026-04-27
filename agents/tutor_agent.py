@@ -55,19 +55,23 @@ def _parse_tech_level(tech_level_str: str) -> dict[str, str]:
 
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
 from db.operations import get_all_concepts
 from tools.search_tool import web_search
 from agents.state import NuraState
 
-# Sprint 19: tools formales disponibles para bind_tools().
-# Se importan con try/except para que el módulo siga cargando aunque
-# tools/db_tools no esté disponible (compatibilidad con entornos mínimos).
+# Sprint 19: lista completa de tools Nura (ToolNode en graph, introspección en tests).
 try:
     from tools.db_tools import NURA_TOOLS as _NURA_TOOLS
 except ImportError:
     _NURA_TOOLS = []
+
+# Sprint 33: tools LangGraph del tutor (web, diagrama, jerarquía, conceptos).
+try:
+    from tools.tutor_graph_tools import TUTOR_BIND_TOOLS
+except ImportError:
+    TUTOR_BIND_TOOLS = []
 
 load_dotenv(Path(__file__).parent.parent / ".env")
 
@@ -321,6 +325,37 @@ def build_similar_concepts_prompt_section(
         f"El usuario ya conoce: {joined}. "
         "Conecta tu explicación con lo que ya sabe."
     )
+
+
+def find_similar_concepts_for_tool(
+    question: str,
+    concepts: list,
+    limit: int = 12,
+) -> list[dict]:
+    """
+    Lista conceptos del mapa con puntuación de similitud respecto a la pregunta.
+
+    Expuesto para `tools.concept_lookup_tool` (Sprint 33) sin acoplar imports circulares.
+    """
+    if not concepts or not (question or "").strip():
+        return []
+    scored: list[tuple[int, object]] = []
+    for c in concepts:
+        sc = _similarity_score(question, c)
+        if sc > 0:
+            scored.append((sc, c))
+    scored.sort(key=lambda t: -t[0])
+    out: list[dict] = []
+    for sc, c in scored[:limit]:
+        out.append(
+            {
+                "term":          getattr(c, "term", "") or "",
+                "category":      getattr(c, "category", "") or "",
+                "mastery_level": int(getattr(c, "mastery_level", 0) or 0),
+                "score":         int(sc),
+            }
+        )
+    return out
 
 
 def simplify_explanation(text: str, user_profile: dict) -> str:
@@ -842,23 +877,63 @@ def tutor_agent(state: NuraState) -> dict:
         human_text = "\n".join(human_parts)
 
         # Temperatura mas alta para respuestas conversacionales.
-        # Sprint 19: bind_tools() registra los tools para que Gemini pueda
-        # decidir invocarlos dinámicamente si el contexto lo requiere.
+        # Sprint 33: bind_tools con tools dedicadas; bucle interno ejecuta tool_calls.
         llm_tutor = ChatGoogleGenerativeAI(
             model=GEMINI_MODEL,
             google_api_key=api_key,  # type: ignore[call-arg]
             temperature=0.7,
         )
-        if _NURA_TOOLS:
-            llm_tutor = llm_tutor.bind_tools(_NURA_TOOLS)
-
-        tutor_response = _call_gemini(
-            llm_tutor,
-            [
+        tutor_response = ""
+        if TUTOR_BIND_TOOLS:
+            tool_by_name = {t.name: t for t in TUTOR_BIND_TOOLS}
+            bound = llm_tutor.bind_tools(list(TUTOR_BIND_TOOLS))
+            messages_lc: list = [
                 SystemMessage(content=tutor_sys_prompt),
                 HumanMessage(content=human_text),
-            ],
-        )
+            ]
+            for _ in range(8):
+                ai_msg = bound.invoke(messages_lc)
+                tcalls = getattr(ai_msg, "tool_calls", None) or []
+                if not tcalls:
+                    tutor_response = (str(ai_msg.content) or "").strip()
+                    break
+                messages_lc.append(ai_msg)
+                for tc in tcalls:
+                    name = tc.get("name") or ""
+                    tid = tc.get("id") or ""
+                    args = dict(tc.get("args") or {})
+                    if name in ("lookup_hierarchy", "lookup_concepts"):
+                        args["user_id"] = user_id
+                    tool_fn = tool_by_name.get(name)
+                    if tool_fn is None:
+                        out_s = json.dumps({"error": f"tool desconocida: {name}"})
+                    else:
+                        try:
+                            out_s = str(tool_fn.invoke(args))
+                        except Exception as _tex:
+                            out_s = json.dumps({"error": str(_tex)[:500]})
+                    out_s = out_s[:12000]
+                    if name == "web_search":
+                        try:
+                            _pdata = json.loads(out_s)
+                            for r in _pdata.get("results", []) or []:
+                                if isinstance(r, dict) and r not in sources:
+                                    sources.append(r)
+                        except (json.JSONDecodeError, TypeError, ValueError):
+                            pass
+                    messages_lc.append(ToolMessage(content=out_s, tool_call_id=tid))
+            else:
+                tutor_response = (
+                    "No pude completar la respuesta con las herramientas disponibles."
+                )
+        else:
+            tutor_response = _call_gemini(
+                llm_tutor,
+                [
+                    SystemMessage(content=tutor_sys_prompt),
+                    HumanMessage(content=human_text),
+                ],
+            )
 
         # ── Paso 5: generar diagrama SVG si el contenido lo amerita ──────────
         # Se envuelve en try/except para no bloquear la respuesta del tutor

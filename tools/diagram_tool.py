@@ -352,3 +352,25 @@ def generate_diagram_svg(concept_text: str, diagram_type: str) -> str:
         return _build_svg(nodes, edges, title)
     except Exception:
         return ""
+
+
+# ── Sprint 33: tool LangChain formal para el tutor ────────────────────────────
+
+from langchain_core.tools import tool as _lc_tool  # noqa: E402
+
+
+@_lc_tool
+def generate_diagram(concept: str, relationships: str) -> str:
+    """Genera un diagrama SVG cuando el concepto
+    se beneficia de una representación visual.
+    Úsala para conceptos con jerarquías, flujos,
+    o relaciones complejas. Retorna código SVG."""
+    parts = [concept or "", relationships or ""]
+    combined = "\n".join(p.strip() for p in parts if p and str(p).strip())
+    if not combined.strip():
+        return ""
+    snippet = combined.strip()[:800]
+    try:
+        return generate_diagram_svg(snippet, "flow") or ""
+    except Exception:
+        return ""
