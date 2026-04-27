@@ -1239,3 +1239,43 @@ def render_tree(tree_dict: dict, depth: int = 0) -> None:
                 render_tree(children, depth=depth + 1)
             elif depth > 0:
                 st.caption("Sin subconceptos registrados.")
+
+
+# ── Sprint 30: certificación por categoría ──────────────────────────────────
+
+
+def render_certification_badge(category: str, score: float, date) -> None:
+    """
+    Muestra un distintivo compacto de categoría certificada con fecha y puntaje.
+
+    Parameters
+    ----------
+    category : Nombre de la categoría (solo para coherencia con llamadores).
+    score    : Puntaje obtenido en el examen (0–1).
+    date     : datetime o cadena ISO / fecha legible.
+    """
+    import streamlit as st
+    from datetime import datetime
+
+    if isinstance(date, datetime):
+        ds = date.strftime("%d/%m/%Y")
+    else:
+        s = str(date)
+        ds = s[:10] if len(s) >= 10 and s[4] == "-" else s[:16]
+
+    pct = int(round(float(score) * 100))
+    cat_esc = _html.escape(category or "")
+    st.markdown(
+        f"""
+        <div style="display:inline-flex; align-items:center; gap:0.4rem;
+                    padding:0.25rem 0.65rem; border-radius:8px;
+                    background:#1e3a2f; border:1px solid #a6e3a155;
+                    margin-bottom:0.5rem;">
+            <span style="color:#a6e3a1; font-weight:700;">✓ Certificada</span>
+            <span style="color:#cdd6f4; font-size:0.8rem;">{cat_esc}</span>
+            <span style="color:#6c7086; font-size:0.8rem;">{ds}</span>
+            <span style="color:#94e2d5; font-size:0.8rem;">({pct}%)</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )

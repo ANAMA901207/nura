@@ -68,17 +68,21 @@ from db.operations import (
     get_reminder_time,
     set_reminder_time,
     get_or_create_daily_summary,
+    get_certifications,
     get_streak,
     get_today_count,
     get_unclassified_concepts,
+    get_user_by_id,
     get_weekly_insight_data,
     record_flashcard_result,
+    save_certification,
     update_daily_goal,
     update_daily_summary,
 )
 from agents.graph import build_graph
 from ui.auth import render_login_page, render_onboarding, is_session_valid, refresh_session
 from ui.components import (
+    render_certification_badge,
     render_concept_card,
     render_concept_detail_panel,
     render_daily_summary,
@@ -1447,6 +1451,98 @@ def _render_learning_profile() -> None:
 
 # ── Vista: Dominar ────────────────────────────────────────────────────────────
 
+
+def _dominar_latest_passed(certs: list, cat: str) -> dict | None:
+    rows = [c for c in certs if c.get("category") == cat and c.get("passed")]
+    if not rows:
+        return None
+    return max(rows, key=lambda r: str(r.get("attempted_at") or ""))
+
+
+def _render_dominar_exam_block(user_id: int) -> None:
+    """Flujo de examen de certificación (pregunta + radio + siguiente / resultado)."""
+    from agents.exam_agent import evaluate_exam
+
+    ex = st.session_state.get("dominar_exam")
+    if not ex:
+        return
+    st.markdown(
+        "<p style='color:#60a0ff; font-size:0.8rem; font-weight:700; "
+        "letter-spacing:0.08em; text-transform:uppercase; margin:0 0 0.6rem 0;'>"
+        "Examen de certificación</p>",
+        unsafe_allow_html=True,
+    )
+    st.caption(f"Categoría: **{ex.get('category', '')}** · Aprobación: **80%** (8/10 o más)")
+
+    if ex.get("phase") == "result" and ex.get("result"):
+        res = ex["result"]
+        st.markdown(
+            f"**Resultado:** {res['correct']}/{res['total']} correctas "
+            f"({res['score']:.0%})."
+        )
+        if res["passed"]:
+            st.success("¡Certificaste esta categoría!")
+        else:
+            missed: list[str] = []
+            for i, q in enumerate(ex["questions"]):
+                pick = ex["answers"][i] if i < len(ex["answers"]) else ""
+                if pick != str(q.get("correct", "")).strip().lower():
+                    cx = str(q.get("concept") or "").strip()
+                    if cx:
+                        missed.append(cx)
+            uniq = list(dict.fromkeys(missed))
+            if uniq:
+                st.warning("**Reforzá estos conceptos:** " + ", ".join(uniq))
+        if st.button("Cerrar", key="dominar_exam_close_result"):
+            st.session_state.pop("dominar_exam", None)
+            st.rerun()
+        return
+
+    qs = ex.get("questions") or []
+    ans = ex.get("answers") or []
+    if not qs:
+        st.session_state.pop("dominar_exam", None)
+        return
+    i = len(ans)
+    if i >= len(qs):
+        st.session_state.pop("dominar_exam", None)
+        return
+    q = qs[i]
+    opts = q.get("options") or []
+    st.markdown(f"**Pregunta {i + 1} de {len(qs)}**")
+    st.markdown(q.get("question", ""))
+
+    def _label(letter: str) -> str:
+        j = ord(letter) - ord("a")
+        if 0 <= j < len(opts):
+            return f"{letter.upper()}) {opts[j]}"
+        return letter.upper()
+
+    choice = st.radio(
+        "Elige una opción",
+        options=["a", "b", "c", "d"],
+        format_func=_label,
+        key=f"dominar_exam_radio_{i}",
+        horizontal=True,
+    )
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Siguiente", type="primary", key=f"dominar_exam_next_{i}"):
+            ex.setdefault("answers", []).append(choice)
+            if len(ex["answers"]) >= len(qs):
+                res = evaluate_exam(ex["questions"], ex["answers"])
+                ex["result"] = res
+                ex["phase"] = "result"
+                if res["passed"]:
+                    save_certification(user_id, ex["category"], res["score"], True)
+                    st.balloons()
+            st.rerun()
+    with c2:
+        if st.button("Cancelar", key="dominar_exam_cancel_flow"):
+            st.session_state.pop("dominar_exam", None)
+            st.rerun()
+
+
 def _render_view_dominar() -> None:
     """
     Renderiza la vista Dominar: tarjetas de acción, resumen diario,
@@ -1469,6 +1565,7 @@ def _render_view_dominar() -> None:
     """
     uid = _current_user_id()
     concepts = get_all_concepts(user_id=uid)
+    all_certs = get_certifications(uid)
     due_today_raw = get_concepts_due_today(user_id=uid)
     # Sprint 20: filtrar due_today a solo los que tienen flashcard.
     due_today = [
@@ -1608,6 +1705,8 @@ def _render_view_dominar() -> None:
         unsafe_allow_html=True,
     )
 
+    _render_dominar_exam_block(uid)
+
     # Alerta de conceptos pendientes con opción de reintento
     unclassified = get_unclassified_concepts(user_id=uid)
     if unclassified:
@@ -1673,6 +1772,65 @@ def _render_view_dominar() -> None:
                 f"{cat.upper()} — {len(cat_concepts)} concepto(s)",
                 expanded=False,
             ):
+                _lp = _dominar_latest_passed(all_certs, cat)
+                if _lp:
+                    render_certification_badge(cat, _lp["score"], _lp["attempted_at"])
+
+                cat_for_exam = [
+                    c
+                    for c in cat_concepts
+                    if getattr(c, "is_classified", False) and c.flashcard_front
+                ]
+                _cat_key = cat.encode("utf-8", errors="replace").hex()[:32]
+                if cat_for_exam:
+                    if st.button(
+                        "📝 Hacer examen",
+                        key=f"dominar_exam_start_{_cat_key}",
+                        use_container_width=False,
+                    ):
+                        _u = get_user_by_id(uid)
+                        _profile: dict = {}
+                        if _u is not None:
+                            _profile = {
+                                "profession":    getattr(_u, "profession", "") or "",
+                                "learning_area": getattr(_u, "learning_area", "") or "",
+                                "tech_level":    getattr(_u, "tech_level", "") or "",
+                            }
+                        from agents.exam_agent import generate_exam
+
+                        _concepts_payload = [
+                            {
+                                "term":        c.term,
+                                "explanation": c.explanation or "",
+                                "category":    c.category or "",
+                            }
+                            for c in cat_for_exam
+                        ]
+                        with st.spinner("Generando examen con Gemini…"):
+                            try:
+                                _qs = generate_exam(cat, _concepts_payload, _profile)
+                            except Exception as _exam_exc:
+                                st.error(f"No se pudo generar el examen: {_exam_exc}")
+                                _qs = []
+                        if _qs:
+                            st.session_state.dominar_exam = {
+                                "phase":     "answering",
+                                "category":  cat,
+                                "questions": _qs,
+                                "answers":   [],
+                            }
+                            st.rerun()
+                        else:
+                            st.error(
+                                "No se pudieron generar preguntas válidas. "
+                                "Revisá tu clave de API o intentá de nuevo."
+                            )
+                else:
+                    st.caption(
+                        "Clasificá al menos un concepto con flashcard en esta categoría "
+                        "para habilitar el examen."
+                    )
+
                 for _ci, c in enumerate(cat_concepts):
                     try:
                         render_concept_card(

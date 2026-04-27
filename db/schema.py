@@ -531,6 +531,27 @@ def _init_db_sqlite() -> None:
                 FOREIGN KEY (child_id)  REFERENCES concepts(id),
                 FOREIGN KEY (parent_id) REFERENCES concepts(id)
             );
+
+            CREATE TABLE IF NOT EXISTS certifications (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id       INTEGER NOT NULL,
+                category      TEXT    NOT NULL,
+                score         REAL    NOT NULL,
+                passed        INTEGER NOT NULL,
+                attempted_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS exam_sessions (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id          INTEGER NOT NULL,
+                category         TEXT    NOT NULL,
+                questions        TEXT    NOT NULL,
+                answers          TEXT    NOT NULL DEFAULT '[]',
+                current_question INTEGER NOT NULL DEFAULT 0,
+                created_at       TEXT    NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            );
         """)
 
 
@@ -626,6 +647,27 @@ def _init_db_postgresql() -> None:
                     parent_id     INTEGER NOT NULL REFERENCES concepts(id),
                     relation_type TEXT    NOT NULL,
                     created_at    TEXT    NOT NULL DEFAULT NOW()
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS certifications (
+                    id            SERIAL PRIMARY KEY,
+                    user_id       INTEGER NOT NULL REFERENCES users(id),
+                    category      TEXT    NOT NULL,
+                    score         DOUBLE PRECISION NOT NULL,
+                    passed        BOOLEAN NOT NULL,
+                    attempted_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS exam_sessions (
+                    id               SERIAL PRIMARY KEY,
+                    user_id          INTEGER NOT NULL REFERENCES users(id),
+                    category         TEXT    NOT NULL,
+                    questions        TEXT    NOT NULL,
+                    answers          TEXT    NOT NULL DEFAULT '[]',
+                    current_question INTEGER NOT NULL DEFAULT 0,
+                    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
             """)
             # Índices de rendimiento
@@ -733,6 +775,28 @@ def _run_migrations_postgresql() -> None:
                 "CREATE INDEX IF NOT EXISTS uq_concepts_term_user "
                 "ON concepts(term, user_id)"
             )
+            # Sprint 30: certificaciones y sesiones de examen (Telegram)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS certifications (
+                    id            SERIAL PRIMARY KEY,
+                    user_id       INTEGER NOT NULL REFERENCES users(id),
+                    category      TEXT    NOT NULL,
+                    score         DOUBLE PRECISION NOT NULL,
+                    passed        BOOLEAN NOT NULL,
+                    attempted_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS exam_sessions (
+                    id               SERIAL PRIMARY KEY,
+                    user_id          INTEGER NOT NULL REFERENCES users(id),
+                    category         TEXT    NOT NULL,
+                    questions        TEXT    NOT NULL,
+                    answers          TEXT    NOT NULL DEFAULT '[]',
+                    current_question INTEGER NOT NULL DEFAULT 0,
+                    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
         raw.commit()
     finally:
         raw.close()
@@ -838,6 +902,31 @@ def _run_migrations_sqlite() -> None:
                 FOREIGN KEY (user_id)   REFERENCES users(id),
                 FOREIGN KEY (child_id)  REFERENCES concepts(id),
                 FOREIGN KEY (parent_id) REFERENCES concepts(id)
+            )
+        """)
+
+        # ── Sprint 30: certificaciones y sesiones de examen (Telegram) ───────
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS certifications (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id       INTEGER NOT NULL,
+                category      TEXT    NOT NULL,
+                score         REAL    NOT NULL,
+                passed        INTEGER NOT NULL,
+                attempted_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS exam_sessions (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id          INTEGER NOT NULL,
+                category         TEXT    NOT NULL,
+                questions        TEXT    NOT NULL,
+                answers          TEXT    NOT NULL DEFAULT '[]',
+                current_question INTEGER NOT NULL DEFAULT 0,
+                created_at       TEXT    NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (user_id) REFERENCES users(id)
             )
         """)
 

@@ -21,6 +21,194 @@ import asyncio
 from typing import Any
 
 
+# ── Sprint 30: examen por Telegram ───────────────────────────────────────────
+
+
+def _user_exam_categories(user_id: int) -> list[str]:
+    from db.operations import get_all_concepts
+
+    cats: set[str] = set()
+    for c in get_all_concepts(user_id=user_id):
+        if getattr(c, "is_classified", False) and c.flashcard_front:
+            cats.add(c.category or "Sin categoría")
+    return sorted(cats)
+
+
+def _match_category(available: list[str], needle: str) -> str | None:
+    n = (needle or "").strip().lower()
+    if not n:
+        return None
+    for a in available:
+        if a.lower() == n:
+            return a
+    return None
+
+
+def _parse_exam_answer_letter(text: str) -> str | None:
+    t = (text or "").strip().lower()
+    if not t:
+        return None
+    if t[0] in ("a", "b", "c", "d"):
+        return t[0]
+    if t in ("1", "2", "3", "4"):
+        return "abcd"[int(t) - 1]
+    return None
+
+
+def _format_telegram_question(q: dict, index0: int) -> str:
+    opts = q.get("options") or []
+    lines = [f"📝 Pregunta *{index0 + 1}/10*", "", q.get("question", "")]
+    for i, letter in enumerate("abcd"):
+        if i < len(opts):
+            lines.append(f"{letter}) {opts[i]}")
+    lines.extend(["", "Respondé con *a*, *b*, *c* o *d* (o 1–4)."])
+    return "\n".join(lines)
+
+
+def try_handle_exam_answer(user_id: int, text: str) -> str | None:
+    """
+    Si hay sesión de examen activa, registra la respuesta o devuelve la siguiente pregunta.
+
+    Retorna None si no aplica (no hay sesión).
+    """
+    from agents.exam_agent import evaluate_exam
+    from db.operations import (
+        delete_exam_session,
+        get_exam_session_for_user,
+        save_certification,
+        update_exam_session_progress,
+    )
+
+    sess = get_exam_session_for_user(user_id)
+    if sess is None:
+        return None
+
+    letter = _parse_exam_answer_letter(text)
+    if letter is None:
+        return (
+            "📝 *Examen en curso* — enviá solo la letra *a*, *b*, *c* o *d* "
+            "(o un dígito del 1 al 4)."
+        )
+
+    qs = sess["questions"]
+    if not isinstance(qs, list) or len(qs) != 10:
+        delete_exam_session(sess["id"])
+        return "La sesión de examen no es válida. Iniciá de nuevo con `/examen [categoría]`."
+
+    ans = list(sess["answers"])
+    if len(ans) >= 10:
+        delete_exam_session(sess["id"])
+        return None
+
+    ans.append(letter)
+    update_exam_session_progress(sess["id"], ans)
+
+    if len(ans) < 10:
+        return _format_telegram_question(qs[len(ans)], len(ans))
+
+    result = evaluate_exam(qs, ans)
+    delete_exam_session(sess["id"])
+    cat = sess["category"]
+    if result["passed"]:
+        save_certification(user_id, cat, result["score"], True)
+
+    lines = [
+        "🏁 *Resultado del examen*",
+        f"Categoría: *{cat}*",
+        f"Aciertos: *{result['correct']}*/{result['total']} ({result['score']:.0%})",
+    ]
+    if result["passed"]:
+        lines.append("✅ ¡Certificaste esta categoría! (umbral ≥ 80%).")
+    else:
+        lines.append("Todavía no alcanzaste el 80%. Seguí practicando en la app.")
+        wrong_concepts: list[str] = []
+        for i, q in enumerate(qs):
+            if i < len(ans) and ans[i] != str(q.get("correct", "")).strip().lower():
+                cx = str(q.get("concept") or "").strip()
+                if cx and cx not in wrong_concepts:
+                    wrong_concepts.append(cx)
+        if wrong_concepts:
+            lines.append("")
+            lines.append("*Conceptos para reforzar:*")
+            for cx in wrong_concepts[:10]:
+                lines.append(f"• {cx}")
+    return "\n".join(lines)
+
+
+async def handle_examen_command(
+    _telegram_id: int | str,
+    user_id: int,
+    category_arg: str,
+) -> str:
+    """Lista categorías o inicia examen y devuelve la primera pregunta."""
+    from agents.exam_agent import generate_exam
+    from db.operations import get_all_concepts, get_user_by_id, replace_exam_session
+
+    cats = _user_exam_categories(user_id)
+    if not category_arg.strip():
+        if not cats:
+            return (
+                "No tenés categorías con conceptos clasificados para examen.\n"
+                "Capturá y clasificá conceptos en la app primero."
+            )
+        body = (
+            "Podés rendir un examen por categoría. Usá:\n`/examen [categoría]`\n\n"
+            "*Categorías disponibles:*\n"
+        )
+        body += "\n".join(f"• `{c}`" for c in cats)
+        return body
+
+    resolved = _match_category(cats, category_arg)
+    if resolved is None:
+        return (
+            f"No reconozco la categoría «{category_arg.strip()}».\n"
+            "Escribí `/examen` para ver la lista."
+        )
+
+    concepts_objs = [
+        c
+        for c in get_all_concepts(user_id=user_id)
+        if (c.category or "Sin categoría") == resolved
+        and getattr(c, "is_classified", False)
+        and c.flashcard_front
+    ]
+    if not concepts_objs:
+        return f"No hay conceptos listos en «{resolved}» para armar el examen."
+
+    concepts_payload = [
+        {
+            "term":        c.term,
+            "explanation": c.explanation or "",
+            "category":    c.category or "",
+        }
+        for c in concepts_objs
+    ]
+    user = get_user_by_id(user_id)
+    profile: dict = {}
+    if user is not None:
+        profile = {
+            "profession":    getattr(user, "profession", "") or "",
+            "learning_area": getattr(user, "learning_area", "") or "",
+            "tech_level":    getattr(user, "tech_level", "") or "",
+        }
+
+    questions = await asyncio.to_thread(
+        generate_exam,
+        resolved,
+        concepts_payload,
+        profile,
+    )
+    if not questions:
+        return "No pude generar el examen ahora. Probá de nuevo más tarde."
+
+    replace_exam_session(user_id, resolved, questions)
+    intro = (
+        f"📝 *Examen: {resolved}*\n"
+        "10 preguntas. Aprobación: *80%* o más.\n\n"
+    )
+    return intro + _format_telegram_question(questions[0], 0)
+
+
 # ── Router principal (async) ──────────────────────────────────────────────────
 
 async def process_update(update: dict) -> dict:
@@ -99,6 +287,14 @@ async def process_update(update: dict) -> dict:
             category = text[len("/arbol"):].strip() or None
             response = handle_arbol(telegram_id, user.id, category)
 
+    elif text.startswith("/examen"):
+        user = _get_linked_user(telegram_id)
+        if user is None:
+            response = _msg_no_vinculado()
+        else:
+            cat_arg = text[len("/examen"):].strip()
+            response = await handle_examen_command(telegram_id, user.id, cat_arg)
+
     elif text.startswith("/podcast"):
         user = _get_linked_user(telegram_id)
         if user is None:
@@ -118,6 +314,11 @@ async def process_update(update: dict) -> dict:
         response = "Comando no reconocido. Escribe /start para ver las opciones."
 
     else:
+        user_ex = _get_linked_user(telegram_id)
+        if user_ex is not None:
+            exam_reply = try_handle_exam_answer(user_ex.id, text)
+            if exam_reply is not None:
+                return {"chat_id": chat_id, "text": exam_reply, "handled": True}
         response = await handle_free_message(telegram_id, text)  # async: llama IA
 
     return {"chat_id": chat_id, "text": response, "handled": True}
@@ -157,6 +358,7 @@ def handle_start(telegram_id: int | str, username: str) -> str:
         "• /repasar — conceptos pendientes de hoy\n"
         "• /streak — tu racha y progreso\n"
         "• /meta [número] — cambia tu meta diaria\n"
+        "• /examen [categoría] — certificación por categoría\n"
         "• O simplemente escríbeme lo que quieras aprender 💡"
     )
 

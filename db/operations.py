@@ -25,6 +25,7 @@ Convenciones de error
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from datetime import datetime, date
@@ -1978,3 +1979,176 @@ def get_concept_tree(user_id: int, category: "str | None" = None) -> dict:
         tree[root_term] = _build_node(root_id)
 
     return tree
+
+
+# ── Sprint 30: certificaciones y sesiones de examen (Telegram) ───────────────
+
+
+def save_certification(user_id: int, category: str, score: float, passed: bool) -> None:
+    """
+    Registra un intento de certificación por categoría.
+
+    `passed` se persiste como BOOLEAN en PostgreSQL y 0/1 en SQLite.
+    """
+    passed_val: bool | int
+    if get_db_mode() == "postgresql":
+        passed_val = bool(passed)
+    else:
+        passed_val = 1 if passed else 0
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO certifications (user_id, category, score, passed)
+            VALUES (?, ?, ?, ?)
+            """,
+            (user_id, category, float(score), passed_val),
+        )
+
+
+def get_certifications(user_id: int) -> list[dict]:
+    """
+    Todas las certificaciones del usuario, más recientes primero.
+    """
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, user_id, category, score, passed, attempted_at
+            FROM   certifications
+            WHERE  user_id = ?
+            ORDER  BY attempted_at DESC
+            """,
+            (user_id,),
+        ).fetchall()
+
+    out: list[dict] = []
+    for row in rows:
+        keys = row.keys() if hasattr(row, "keys") else []
+        passed_raw = row["passed"] if "passed" in keys else row[4]
+        if isinstance(passed_raw, bool):
+            passed_bool = passed_raw
+        else:
+            passed_bool = bool(int(passed_raw)) if passed_raw is not None else False
+        at = row["attempted_at"] if "attempted_at" in keys else row[5]
+        if at is not None and not isinstance(at, datetime):
+            try:
+                at = datetime.fromisoformat(str(at).replace("Z", "+00:00"))
+            except ValueError:
+                at = str(at)
+        out.append(
+            {
+                "id":           int(row["id"] if "id" in keys else row[0]),
+                "user_id":      int(row["user_id"] if "user_id" in keys else row[1]),
+                "category":     str(row["category"] if "category" in keys else row[2]),
+                "score":        float(row["score"] if "score" in keys else row[3]),
+                "passed":       passed_bool,
+                "attempted_at": at,
+            }
+        )
+    return out
+
+
+def get_best_score(user_id: int, category: str) -> float | None:
+    """Mejor puntaje registrado para esa categoría (todos los intentos)."""
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT MAX(score) AS mx
+            FROM   certifications
+            WHERE  user_id = ? AND category = ?
+            """,
+            (user_id, category),
+        ).fetchone()
+    if row is None:
+        return None
+    keys = row.keys() if hasattr(row, "keys") else []
+    val = row["mx"] if "mx" in keys else row[0]
+    if val is None:
+        return None
+    return float(val)
+
+
+def replace_exam_session(user_id: int, category: str, questions: list[dict]) -> int:
+    """
+    Elimina sesiones previas del usuario e inserta una nueva (examen en Telegram).
+    """
+    qjson = json.dumps(questions, ensure_ascii=False)
+    with get_connection() as conn:
+        conn.execute("DELETE FROM exam_sessions WHERE user_id = ?", (user_id,))
+        cur = conn.execute(
+            """
+            INSERT INTO exam_sessions (user_id, category, questions, answers, current_question)
+            VALUES (?, ?, ?, '[]', 0)
+            """,
+            (user_id, category, qjson),
+        )
+        lid = getattr(cur, "lastrowid", None)
+        if lid:
+            return int(lid)
+        row = conn.execute(
+            "SELECT id FROM exam_sessions WHERE user_id = ? ORDER BY id DESC LIMIT 1",
+            (user_id,),
+        ).fetchone()
+        if row is None:
+            return 0
+        keys = row.keys() if hasattr(row, "keys") else []
+        return int(row["id"] if "id" in keys else row[0])
+
+
+def get_exam_session_for_user(user_id: int) -> dict | None:
+    """Última sesión de examen del usuario (JSON parseado en listas)."""
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT id, user_id, category, questions, answers, current_question, created_at
+            FROM   exam_sessions
+            WHERE  user_id = ?
+            ORDER  BY id DESC
+            LIMIT  1
+            """,
+            (user_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    keys = row.keys() if hasattr(row, "keys") else []
+    q_raw = row["questions"] if "questions" in keys else row[3]
+    a_raw = row["answers"] if "answers" in keys else row[4]
+    try:
+        questions = json.loads(q_raw)
+        answers = json.loads(a_raw) if a_raw else []
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(questions, list) or not isinstance(answers, list):
+        return None
+    sid = int(row["id"] if "id" in keys else row[0])
+    cat = str(row["category"] if "category" in keys else row[2])
+    cq = int(row["current_question"] if "current_question" in keys else row[5])
+    created = row["created_at"] if "created_at" in keys else row[6]
+    return {
+        "id":                sid,
+        "user_id":           int(row["user_id"] if "user_id" in keys else row[1]),
+        "category":          cat,
+        "questions":         questions,
+        "answers":           answers,
+        "current_question":  cq,
+        "created_at":        created,
+    }
+
+
+def update_exam_session_progress(session_id: int, answers: list[str]) -> None:
+    """Persiste respuestas acumuladas y avanza `current_question` (= len(answers))."""
+    payload = json.dumps(answers, ensure_ascii=False)
+    cq = len(answers)
+    with get_connection() as conn:
+        conn.execute(
+            """
+            UPDATE exam_sessions
+            SET answers = ?, current_question = ?
+            WHERE id = ?
+            """,
+            (payload, cq, session_id),
+        )
+
+
+def delete_exam_session(session_id: int) -> None:
+    with get_connection() as conn:
+        conn.execute("DELETE FROM exam_sessions WHERE id = ?", (session_id,))
