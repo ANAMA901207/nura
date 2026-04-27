@@ -295,6 +295,13 @@ async def process_update(update: dict) -> dict:
             cat_arg = text[len("/examen"):].strip()
             response = await handle_examen_command(telegram_id, user.id, cat_arg)
 
+    elif text.startswith("/brechas"):
+        user = _get_linked_user(telegram_id)
+        if user is None:
+            response = _msg_no_vinculado()
+        else:
+            response = handle_brechas(telegram_id, user.id)
+
     elif text.startswith("/podcast"):
         user = _get_linked_user(telegram_id)
         if user is None:
@@ -359,8 +366,29 @@ def handle_start(telegram_id: int | str, username: str) -> str:
         "• /streak — tu racha y progreso\n"
         "• /meta [número] — cambia tu meta diaria\n"
         "• /examen [categoría] — certificación por categoría\n"
+        "• /brechas — conceptos sin conexión en tu mapa\n"
         "• O simplemente escríbeme lo que quieras aprender 💡"
     )
+
+
+def handle_brechas(_telegram_id: int | str, user_id: int) -> str:
+    """Lista conceptos huérfanos (sin conexiones) con sugerencia de exploración."""
+    from db.operations import get_orphan_concepts
+
+    orphans = get_orphan_concepts(user_id)
+    if not orphans:
+        return "¡Tu mapa está bien conectado! No tienes conceptos aislados."
+    lines = ["*Conceptos sin conexión* (primeros 5):\n"]
+    for o in orphans[:5]:
+        t = str(o.get("term", "")).strip()
+        if not t:
+            continue
+        lines.append(
+            f"• *{t}* — prueba /tutor ¿Cómo se relaciona {t} con lo que ya sé?"
+        )
+    if len(orphans) > 5:
+        lines.append(f"\n…y {len(orphans) - 5} más.")
+    return "\n".join(lines)
 
 
 async def handle_capturar(telegram_id: int | str, texto: str) -> str:

@@ -2152,3 +2152,113 @@ def update_exam_session_progress(session_id: int, answers: list[str]) -> None:
 def delete_exam_session(session_id: int) -> None:
     with get_connection() as conn:
         conn.execute("DELETE FROM exam_sessions WHERE id = ?", (session_id,))
+
+
+# ── Sprint 31: brechas (huérfanos) y progreso por semana ─────────────────────
+
+
+def get_orphan_concepts(user_id: int) -> list[dict]:
+    """
+    Conceptos del usuario sin ninguna fila en `connections` (ni en A ni en B).
+
+    Retorna dicts con id, term, category (y created_at para la UI).
+    """
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT c.id, c.term, c.category, c.created_at
+            FROM   concepts c
+            WHERE  c.user_id = ?
+              AND  NOT EXISTS (
+                    SELECT 1
+                    FROM   connections cn
+                    WHERE  cn.user_id = c.user_id
+                      AND  (cn.concept_id_a = c.id OR cn.concept_id_b = c.id)
+                  )
+            ORDER  BY LOWER(c.term)
+            """,
+            (user_id,),
+        ).fetchall()
+
+    out: list[dict] = []
+    for row in rows:
+        keys = row.keys() if hasattr(row, "keys") else []
+        cid = int(row["id"] if "id" in keys else row[0])
+        term = str(row["term"] if "term" in keys else row[1])
+        cat = str(row["category"] if "category" in keys else row[2])
+        created = row["created_at"] if "created_at" in keys else row[3]
+        out.append(
+            {
+                "id":         cid,
+                "term":       term,
+                "category":   cat,
+                "created_at": created,
+            }
+        )
+    return out
+
+
+def _iso_week_label(dt: datetime) -> str:
+    y, w, _ = dt.isocalendar()
+    return f"{y}-W{w:02d}"
+
+
+def get_concepts_by_week(user_id: int) -> list[dict]:
+    """
+    Conteo acumulado de conceptos por semana ISO y categoría.
+
+    Cada fila: {week: '2026-W01', category: 'IA', count: <acumulado>}.
+    Orden: semana ascendente, luego categoría.
+    """
+    from collections import defaultdict
+
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT created_at, category
+            FROM   concepts
+            WHERE  user_id = ?
+            ORDER  BY created_at
+            """,
+            (user_id,),
+        ).fetchall()
+
+    if not rows:
+        return []
+
+    new_by_week_cat: dict[tuple[str, str], int] = defaultdict(int)
+    all_cats: set[str] = set()
+
+    for row in rows:
+        keys = row.keys() if hasattr(row, "keys") else []
+        raw_ca = row["created_at"] if "created_at" in keys else row[0]
+        raw_cat = row["category"] if "category" in keys else row[1]
+        cat = (str(raw_cat).strip() if raw_cat is not None else "") or "Sin categoría"
+        all_cats.add(cat)
+        if raw_ca is None:
+            continue
+        try:
+            if isinstance(raw_ca, datetime):
+                dt = raw_ca
+            else:
+                dt = datetime.fromisoformat(str(raw_ca).replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            continue
+        if dt.tzinfo is not None:
+            dt = dt.replace(tzinfo=None)
+        wk = _iso_week_label(dt)
+        new_by_week_cat[(wk, cat)] += 1
+
+    if not new_by_week_cat:
+        return []
+
+    weeks_sorted = sorted({wk for (wk, _) in new_by_week_cat.keys()})
+    cats_sorted = sorted(all_cats)
+
+    cum: dict[str, int] = {c: 0 for c in cats_sorted}
+    out: list[dict] = []
+    for wk in weeks_sorted:
+        for cat in cats_sorted:
+            cum[cat] += new_by_week_cat.get((wk, cat), 0)
+            out.append({"week": wk, "category": cat, "count": cum[cat]})
+    return out

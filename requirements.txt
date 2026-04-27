@@ -4,6 +4,9 @@
 # Interfaz web
 streamlit==1.56.0
 
+# Gráficos de progreso (Sprint 31 — st.line_chart / pivot)
+pandas==2.2.3
+
 # Orquestación de agentes LLM
 langgraph==1.1.6
 langchain-google-genai==4.2.1

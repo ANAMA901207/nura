@@ -60,11 +60,13 @@ from db.operations import (
     get_all_connections,
     get_concept_by_id,
     get_concept_connections_detail,
+    get_concepts_by_week,
     get_concepts_due_today,
     get_daily_goal,
     get_dominated_concepts,
     get_mastery_by_category,
     get_neglected_concepts,
+    get_orphan_concepts,
     get_reminder_time,
     set_reminder_time,
     get_or_create_daily_summary,
@@ -93,6 +95,7 @@ from ui.components import (
     render_motivational_banner,   # kept for backward compat; delegates to toast
     render_tree,
     render_motivational_toast,
+    render_progress_chart,
     render_quiz,
     render_sources,
     render_streak,
@@ -637,6 +640,7 @@ def _render_view_descubrir() -> None:
                 label="input",
                 label_visibility="collapsed",
                 placeholder="Ej: tasa de interés · ¿qué es la amortización?",
+                key="discover_chat_input",
             )
         with col_btn:
             submitted = st.form_submit_button("Enviar", use_container_width=True, type="primary")
@@ -1680,6 +1684,29 @@ def _render_view_dominar() -> None:
 
     st.markdown("---")
 
+    # ── Sprint 31: progreso por área (semanas × categoría) ─────────────────────
+    st.markdown(
+        "<p style='color:#60a0ff; font-size:0.8rem; font-weight:700; "
+        "letter-spacing:0.08em; text-transform:uppercase; margin:0 0 0.6rem 0;'>"
+        "📈 Mi progreso</p>",
+        unsafe_allow_html=True,
+    )
+    _by_week = get_concepts_by_week(uid)
+    _prog_cats = sorted({r["category"] for r in _by_week}) if _by_week else []
+    _cat_pick = st.selectbox(
+        "Filtrar por categoría",
+        options=["Todas"] + _prog_cats,
+        index=0,
+        key="dominar_progress_category_filter",
+    )
+    if _cat_pick == "Todas":
+        _by_week_f = _by_week
+    else:
+        _by_week_f = [r for r in _by_week if r.get("category") == _cat_pick]
+    render_progress_chart(_by_week_f)
+
+    st.markdown("---")
+
     # ── Flashcards (solo si hay sesión activa o hay cola pendiente) ───────────
     _fc_active = bool(st.session_state.fc_queue) or st.session_state.fc_session_done
     if _fc_active or n_fc > 0:
@@ -1866,6 +1893,39 @@ def _render_view_conectar() -> None:
     if not concepts:
         st.info("El mapa aparecerá cuando tengas al menos un concepto capturado.")
         return
+
+    # ── Sprint 31: brechas (conceptos sin conexiones) ─────────────────────────
+    st.markdown(
+        "<p style='color:#60a0ff; font-size:0.8rem; font-weight:700; "
+        "letter-spacing:0.08em; text-transform:uppercase; margin:0 0 0.6rem 0;'>"
+        "🔍 Brechas detectadas</p>",
+        unsafe_allow_html=True,
+    )
+    _orphans = get_orphan_concepts(uid)
+    if not _orphans:
+        st.success("¡Tu mapa está bien conectado!")
+    else:
+        st.markdown(
+            "<p style='color:#a6adc8; font-size:0.85rem; margin-bottom:0.75rem;'>"
+            "Estos conceptos aún no están enlazados con otros en tu mapa. "
+            "Explorá cómo se relacionan con lo que ya sabés.</p>",
+            unsafe_allow_html=True,
+        )
+        for _o in _orphans:
+            _term = _o.get("term", "")
+            _col_o1, _col_o2 = st.columns([3, 2])
+            with _col_o1:
+                st.markdown(
+                    f"<p style='color:#cdd6f4; margin:0.2rem 0;'><strong>{_html.escape(_term)}</strong></p>",
+                    unsafe_allow_html=True,
+                )
+            with _col_o2:
+                _q = f"¿Cómo se relaciona {_term} con lo que ya sé?"
+                if st.button("Explorar conexión", key=f"orphan_explore_{_o.get('id', 0)}"):
+                    st.session_state.discover_chat_input = _q
+                    st.session_state.current_view = "descubrir"
+                    st.rerun()
+    st.markdown("---")
 
     # ── Sprint 28: toggle Mapa / Árbol ───────────────────────────────────────
     _vista_mode = st.radio(

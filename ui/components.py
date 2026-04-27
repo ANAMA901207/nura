@@ -1279,3 +1279,34 @@ def render_certification_badge(category: str, score: float, date) -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+def render_progress_chart(data: list[dict]) -> None:
+    """
+    Gráfico de líneas: semana (eje X) vs conteo acumulado, una serie por categoría.
+
+    Requiere al menos dos semanas distintas en `data`; si no, mensaje motivacional.
+    """
+    import streamlit as st
+
+    if not data:
+        st.info("Sigue capturando conceptos para ver tu progreso")
+        return
+    weeks = {str(d.get("week", "")) for d in data if d.get("week")}
+    if len(weeks) < 2:
+        st.info("Sigue capturando conceptos para ver tu progreso")
+        return
+
+    import pandas as pd
+
+    df = pd.DataFrame(data)
+    if df.empty or not {"week", "category", "count"}.issubset(df.columns):
+        st.info("Sigue capturando conceptos para ver tu progreso")
+        return
+
+    pivot = (
+        df.pivot_table(index="week", columns="category", values="count", aggfunc="last")
+        .sort_index()
+        .ffill()
+    )
+    st.line_chart(pivot)
