@@ -70,11 +70,13 @@ from db.operations import (
     get_reminder_time,
     set_reminder_time,
     get_or_create_daily_summary,
+    get_activity_last_30_days,
     get_certifications,
     get_streak,
     get_today_count,
     get_unclassified_concepts,
     get_user_by_id,
+    get_user_stats,
     get_weekly_insight_data,
     record_flashcard_result,
     save_certification,
@@ -96,6 +98,8 @@ from ui.components import (
     render_tree,
     render_motivational_toast,
     render_progress_chart,
+    render_profile,
+    render_activity_heatmap,
     render_quiz,
     render_sources,
     render_streak,
@@ -484,7 +488,7 @@ def _init_session() -> None:
                 st.session_state.map_filter_concept_id = int(_qp_node)
             except (ValueError, TypeError):
                 pass
-        if _qp_view in ("descubrir", "dominar", "conectar"):
+        if _qp_view in ("descubrir", "dominar", "conectar", "perfil"):
             st.session_state.current_view = _qp_view
         # Limpiar los params de la URL sin recargar (solo actualiza la URL del navegador)
         st.query_params.clear()
@@ -2097,6 +2101,68 @@ def _render_view_conectar() -> None:
         render_concept_detail_panel(focal_concept, detail)
 
 
+# ── Vista: Mi perfil (Sprint 32) ───────────────────────────────────────────────
+
+
+def _render_view_perfil() -> None:
+    """Perfil de aprendizaje: stats, actividad 30 días y ajustes (meta, recordatorio)."""
+    import datetime as _dt
+
+    uid = _current_user_id()
+    st.markdown("### 👤 Mi perfil")
+    st.markdown(
+        "<p style='color:#7f849c; font-size:0.85rem; margin-top:-0.5rem;'>"
+        "Tu huella de conocimiento y preferencias de la app.</p>",
+        unsafe_allow_html=True,
+    )
+
+    _stats = get_user_stats(uid)
+    _activity = get_activity_last_30_days(uid)
+    render_profile(_stats)
+    render_activity_heatmap(_activity)
+
+    st.markdown("---")
+    st.markdown(
+        "<p style='color:#60a0ff; font-size:0.8rem; font-weight:700; "
+        "letter-spacing:0.08em; text-transform:uppercase; margin:0 0 0.6rem 0;'>"
+        "Configuración</p>",
+        unsafe_allow_html=True,
+    )
+    st.caption("Meta diaria y recordatorio por Telegram (misma cuenta que en el menú lateral).")
+
+    _cur_goal = get_daily_goal(uid)
+    _cur_rem = get_reminder_time(uid)
+    _rh, _rm = (int(x) for x in _cur_rem.split(":"))
+
+    with st.form("perfil_settings_form", clear_on_submit=False):
+        _new_goal = st.number_input(
+            "Meta diaria de conceptos",
+            min_value=1,
+            max_value=50,
+            value=_cur_goal,
+            step=1,
+            key="perfil_daily_goal",
+        )
+        _new_reminder = st.time_input(
+            "Hora de recordatorio (Telegram)",
+            value=_dt.time(_rh, _rm),
+            key="perfil_reminder_time",
+        )
+        if st.form_submit_button("Guardar ajustes", use_container_width=True, type="primary"):
+            update_daily_goal(uid, int(_new_goal))
+            set_reminder_time(uid, _new_reminder.strftime("%H:%M"))
+            st.success("Preferencias guardadas.")
+            st.rerun()
+
+    st.markdown("---")
+    st.markdown(
+        "<p style='color:#6c7086; font-size:0.85rem;'>"
+        "Para editar profesión, áreas y nivel técnico, usá el expander "
+        "<strong>Mi perfil</strong> en la barra lateral.</p>",
+        unsafe_allow_html=True,
+    )
+
+
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -2259,6 +2325,14 @@ def main() -> None:
             '<path d="M12 12V8"/>'
             '</svg>'
         )
+        _SVG_USER = (
+            '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" '
+            'viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+            'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+            '<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/>'
+            '<circle cx="12" cy="7" r="4"/>'
+            '</svg>'
+        )
         _SVG_LOGOUT = (
             '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" '
             'viewBox="0 0 24 24" fill="none" stroke="currentColor" '
@@ -2276,6 +2350,7 @@ def main() -> None:
             ("descubrir", _SVG_MSG,  "Descubrir"),
             ("dominar",   _SVG_BOOK, _dominar_label),
             ("conectar",  _SVG_NET,  "Conectar"),
+            ("perfil",    _SVG_USER, "👤 Mi perfil"),
         ]
 
         for _view_id, _nav_svg, _nav_label in _NAV_CONFIG:
@@ -2469,6 +2544,8 @@ def main() -> None:
         _render_view_dominar()
     elif _active_view == "conectar":
         _render_view_conectar()
+    elif _active_view == "perfil":
+        _render_view_perfil()
     else:
         _render_view_descubrir()
 

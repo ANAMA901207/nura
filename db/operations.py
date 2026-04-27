@@ -2262,3 +2262,183 @@ def get_concepts_by_week(user_id: int) -> list[dict]:
             cum[cat] += new_by_week_cat.get((wk, cat), 0)
             out.append({"week": wk, "category": cat, "count": cum[cat]})
     return out
+
+
+# ── Sprint 32: perfil de aprendizaje (stats y actividad) ──────────────────────
+
+
+def get_max_streak(user_id: int) -> int:
+    """
+    Racha máxima histórica: mayor número de días consecutivos de calendario
+    en los que el usuario capturó al menos un concepto (según `created_at`).
+    """
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT SUBSTR(created_at, 1, 10) AS d
+            FROM   concepts
+            WHERE  user_id = ?
+              AND  created_at IS NOT NULL
+              AND  LENGTH(created_at) >= 10
+            ORDER  BY d
+            """,
+            (user_id,),
+        ).fetchall()
+
+    dates: list[date] = []
+    for row in rows:
+        keys = row.keys() if hasattr(row, "keys") else []
+        ds = row["d"] if "d" in keys else row[0]
+        if not ds:
+            continue
+        try:
+            dates.append(date.fromisoformat(str(ds)[:10]))
+        except ValueError:
+            continue
+
+    if not dates:
+        return 0
+
+    max_run = 1
+    cur_run = 1
+    for i in range(1, len(dates)):
+        delta = (dates[i] - dates[i - 1]).days
+        if delta == 1:
+            cur_run += 1
+            max_run = max(max_run, cur_run)
+        elif delta == 0:
+            continue
+        else:
+            cur_run = 1
+
+    return max_run
+
+
+def get_activity_last_30_days(user_id: int) -> list[dict]:
+    """
+    Una entrada por día (últimos 30 días, hoy inclusive), orden ascendente por fecha.
+
+    Cada dict: {date: 'YYYY-MM-DD', count: int} — `count` es capturas ese día.
+    """
+    from datetime import timedelta
+
+    today = date.today()
+    day_list = [today - timedelta(days=29 - i) for i in range(30)]
+
+    out: list[dict] = []
+    with get_connection() as conn:
+        for d in day_list:
+            ds = d.isoformat()
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS cnt
+                FROM   concepts
+                WHERE  user_id = ?
+                  AND  SUBSTR(created_at, 1, 10) = ?
+                """,
+                (user_id, ds),
+            ).fetchone()
+            cnt = 0
+            if row is not None:
+                keys = row.keys() if hasattr(row, "keys") else []
+                if "cnt" in keys:
+                    cnt = int(row["cnt"] or 0)
+                else:
+                    try:
+                        cnt = int(row[0] or 0)
+                    except (TypeError, ValueError):
+                        cnt = 0
+            out.append({"date": ds, "count": cnt})
+    return out
+
+
+def get_user_stats(user_id: int) -> dict:
+    """
+    Estadísticas consolidadas para perfil / Telegram.
+
+    Incluye `certifications`: certificaciones aprobadas (badge en UI).
+    `mastery_pct`: % de conceptos clasificados con dominio alto (nivel ≥ 4).
+    """
+    with get_connection() as conn:
+        row_tc = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM concepts WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        row_tn = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM connections WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        cat_rows = conn.execute(
+            """
+            SELECT COALESCE(NULLIF(TRIM(COALESCE(category, '')), ''), 'Sin categoría') AS cat,
+                   COUNT(*) AS cnt
+            FROM   concepts
+            WHERE  user_id = ?
+            GROUP  BY cat
+            ORDER  BY cnt DESC
+            LIMIT  3
+            """,
+            (user_id,),
+        ).fetchall()
+        row_m = conn.execute(
+            """
+            SELECT COUNT(*) AS total,
+                   COALESCE(SUM(CASE WHEN mastery_level >= 4 THEN 1 ELSE 0 END), 0) AS dom
+            FROM   concepts
+            WHERE  user_id = ?
+              AND  is_classified = 1
+            """,
+            (user_id,),
+        ).fetchone()
+
+    def _cnt(r: Any) -> int:
+        if r is None:
+            return 0
+        keys = r.keys() if hasattr(r, "keys") else []
+        if "cnt" in keys:
+            return int(r["cnt"] or 0)
+        return int(r[0] or 0)
+
+    total_concepts = _cnt(row_tc)
+    total_connections = _cnt(row_tn)
+
+    top_categories: list[dict] = []
+    for r in cat_rows or []:
+        keys = r.keys() if hasattr(r, "keys") else []
+        cat = str(r["cat"] if "cat" in keys else r[0])
+        cco = int(r["cnt"] if "cnt" in keys else r[1])
+        top_categories.append({"category": cat, "count": cco})
+
+    mastery_pct = 0.0
+    if row_m is not None:
+        keys = row_m.keys() if hasattr(row_m, "keys") else []
+        tot = int(row_m["total"] if "total" in keys else row_m[0] or 0)
+        _dom_raw = row_m["dom"] if "dom" in keys else row_m[1]
+        dom = int(_dom_raw) if _dom_raw is not None else 0
+        if tot > 0:
+            mastery_pct = round(100.0 * dom / tot, 1)
+
+    certs_raw = get_certifications(user_id)
+    passed_certs = [c for c in certs_raw if c.get("passed")]
+    certifications_count = len(passed_certs)
+
+    cert_for_ui: list[dict] = []
+    for c in passed_certs:
+        cert_for_ui.append(
+            {
+                "category":     c.get("category", ""),
+                "score":        float(c.get("score", 0)),
+                "attempted_at": c.get("attempted_at"),
+            }
+        )
+
+    return {
+        "total_concepts":        total_concepts,
+        "total_connections":     total_connections,
+        "top_categories":        top_categories,
+        "current_streak":        get_streak(user_id),
+        "max_streak":            get_max_streak(user_id),
+        "certifications_count":  certifications_count,
+        "mastery_pct":           mastery_pct,
+        "certifications":        cert_for_ui,
+    }

@@ -1310,3 +1310,76 @@ def render_progress_chart(data: list[dict]) -> None:
         .ffill()
     )
     st.line_chart(pivot)
+
+
+# ── Sprint 32: perfil de aprendizaje ─────────────────────────────────────────
+
+
+def render_profile(stats: dict) -> None:
+    """
+    Resumen visual: métricas, top categorías, certificaciones.
+    """
+    import streamlit as st
+
+    total = int(stats.get("total_concepts", 0) or 0)
+    if total < 5:
+        st.info("¡Empieza capturando conceptos para ver tu huella de conocimiento!")
+        return
+
+    m1, m2, m3, m4 = st.columns(4)
+    with m1:
+        st.metric("Conceptos", stats.get("total_concepts", 0))
+    with m2:
+        st.metric("Conexiones", stats.get("total_connections", 0))
+    with m3:
+        st.metric("Racha actual", f"{stats.get('current_streak', 0)} días")
+    with m4:
+        st.metric("Certificaciones", stats.get("certifications_count", 0))
+
+    st.caption(f"Racha máxima histórica: **{stats.get('max_streak', 0)}** días · Dominio alto (nivel ≥4): **{stats.get('mastery_pct', 0)}%**")
+
+    st.markdown("##### Top categorías")
+    tops = stats.get("top_categories") or []
+    if not tops:
+        st.caption("Sin categorías todavía.")
+    else:
+        mx = max((int(t.get("count", 0)) for t in tops[:3]), default=1)
+        mx = max(mx, 1)
+        for t in tops[:3]:
+            label = str(t.get("category", ""))
+            cnt = int(t.get("count", 0))
+            try:
+                st.progress(min(cnt / mx, 1.0), text=f"{label} — {cnt} concepto(s)")
+            except TypeError:
+                st.progress(min(cnt / mx, 1.0))
+                st.caption(f"{label} — {cnt} concepto(s)")
+
+    st.markdown("##### Certificaciones")
+    certs = stats.get("certifications") or []
+    if not certs:
+        st.caption("Aún no tienes certificaciones aprobadas.")
+    else:
+        for c in certs:
+            render_certification_badge(
+                str(c.get("category", "")),
+                float(c.get("score", 0)),
+                c.get("attempted_at"),
+            )
+
+
+def render_activity_heatmap(activity_data: list[dict]) -> None:
+    """
+    Barras de actividad diaria (capturas) en los últimos 30 días.
+    """
+    import streamlit as st
+
+    st.markdown("##### Actividad últimos 30 días")
+    if not activity_data:
+        return
+    import pandas as pd
+
+    df = pd.DataFrame(activity_data)
+    if "date" not in df.columns or "count" not in df.columns:
+        return
+    chart_df = df.set_index("date")[["count"]].rename(columns={"count": "Conceptos capturados"})
+    st.bar_chart(chart_df)

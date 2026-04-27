@@ -302,6 +302,13 @@ async def process_update(update: dict) -> dict:
         else:
             response = handle_brechas(telegram_id, user.id)
 
+    elif text.startswith("/perfil"):
+        user = _get_linked_user(telegram_id)
+        if user is None:
+            response = _msg_no_vinculado()
+        else:
+            response = handle_perfil(telegram_id, user.id)
+
     elif text.startswith("/podcast"):
         user = _get_linked_user(telegram_id)
         if user is None:
@@ -367,6 +374,7 @@ def handle_start(telegram_id: int | str, username: str) -> str:
         "• /meta [número] — cambia tu meta diaria\n"
         "• /examen [categoría] — certificación por categoría\n"
         "• /brechas — conceptos sin conexión en tu mapa\n"
+        "• /perfil — tu resumen de aprendizaje\n"
         "• O simplemente escríbeme lo que quieras aprender 💡"
     )
 
@@ -389,6 +397,29 @@ def handle_brechas(_telegram_id: int | str, user_id: int) -> str:
     if len(orphans) > 5:
         lines.append(f"\n…y {len(orphans) - 5} más.")
     return "\n".join(lines)
+
+
+def handle_perfil(_telegram_id: int | str, user_id: int) -> str:
+    """Resumen de estadísticas de aprendizaje en texto (Telegram)."""
+    from db.operations import get_user_stats
+
+    s = get_user_stats(user_id)
+    tops = s.get("top_categories") or []
+    top_txt = ", ".join(
+        f"{t.get('category', '')} ({int(t.get('count', 0))})"
+        for t in tops[:3]
+    ) or "—"
+
+    return (
+        "👤 *Tu perfil de aprendizaje*\n\n"
+        f"📚 Conceptos: *{s.get('total_concepts', 0)}*\n"
+        f"🔗 Conexiones: *{s.get('total_connections', 0)}*\n"
+        f"🔥 Racha actual: *{s.get('current_streak', 0)}* día(s)\n"
+        f"🏆 Certificaciones: *{s.get('certifications_count', 0)}*\n"
+        f"📊 Top categorías: {top_txt}\n"
+        f"_Dominio alto (nivel ≥4): {s.get('mastery_pct', 0)}% · "
+        f"Racha máxima histórica: {s.get('max_streak', 0)} día(s)_"
+    )
 
 
 async def handle_capturar(telegram_id: int | str, texto: str) -> str:
