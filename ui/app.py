@@ -47,7 +47,14 @@ _FAVICON = _load_favicon()
 sys.path.insert(0, str(Path(__file__).parent.parent))
 os.chdir(Path(__file__).parent.parent)
 
-from dotenv import load_dotenv
+# python-dotenv puede faltar en algunos despliegues; Streamlit Cloud suele usar Secrets.
+try:
+    from dotenv import load_dotenv
+except ModuleNotFoundError:  # pragma: no cover - entorno mínimo / resolución de deps
+    def load_dotenv(*_args, **_kwargs):  # type: ignore[misc]
+        return False
+
+
 load_dotenv(Path(__file__).parent.parent / ".env")
 
 import streamlit as st
