@@ -728,6 +728,44 @@ def capture_agent(state: NuraState) -> dict:
     )
     all_concepts = get_all_concepts(user_id=user_id)
 
+    # Sprint 28: detección de jerarquía (nunca bloquea la captura)
+    try:
+        from agents.hierarchy_agent import detect_hierarchy
+        from db.operations import save_hierarchy
+
+        new_dict = {
+            "id":          concept.id,
+            "term":        concept.term,
+            "category":    concept.category,
+            "subcategory": concept.subcategory,
+            "explanation": concept.explanation,
+        }
+        existing_dicts = [
+            {
+                "id":          c.id,
+                "term":        c.term,
+                "category":    c.category,
+                "subcategory": c.subcategory,
+                "explanation": c.explanation,
+            }
+            for c in all_concepts
+            if c.id != concept.id
+        ]
+        user_profile = state.get("user_profile") or {}
+        relations = detect_hierarchy(new_dict, existing_dicts, user_profile)
+        for rel in relations:
+            try:
+                save_hierarchy(
+                    user_id=user_id,
+                    child_id=rel["child_id"],
+                    parent_id=rel["parent_id"],
+                    relation_type=rel["relation_type"],
+                )
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     return {
         "mode": "capture",
         "current_concept": concept,

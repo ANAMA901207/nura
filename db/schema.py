@@ -515,6 +515,18 @@ def _init_db_sqlite() -> None:
                 user_id           INTEGER NOT NULL DEFAULT 1,
                 UNIQUE(date, user_id)
             );
+
+            CREATE TABLE IF NOT EXISTS concept_hierarchy (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id       INTEGER NOT NULL,
+                child_id      INTEGER NOT NULL,
+                parent_id     INTEGER NOT NULL,
+                relation_type TEXT    NOT NULL,
+                created_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (user_id)   REFERENCES users(id),
+                FOREIGN KEY (child_id)  REFERENCES concepts(id),
+                FOREIGN KEY (parent_id) REFERENCES concepts(id)
+            );
         """)
 
 
@@ -601,6 +613,16 @@ def _init_db_postgresql() -> None:
                     UNIQUE(date, user_id)
                 )
             """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS concept_hierarchy (
+                    id            SERIAL PRIMARY KEY,
+                    user_id       INTEGER NOT NULL REFERENCES users(id),
+                    child_id      INTEGER NOT NULL REFERENCES concepts(id),
+                    parent_id     INTEGER NOT NULL REFERENCES concepts(id),
+                    relation_type TEXT    NOT NULL,
+                    created_at    TEXT    NOT NULL DEFAULT NOW()
+                )
+            """)
             # Índices de rendimiento
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_concepts_user_id ON concepts(user_id)"
@@ -672,6 +694,17 @@ def _run_migrations_postgresql() -> None:
                 cur.execute(
                     f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {defn}"
                 )
+            # Sprint 28: tabla concept_hierarchy (idempotente con IF NOT EXISTS)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS concept_hierarchy (
+                    id            SERIAL PRIMARY KEY,
+                    user_id       INTEGER NOT NULL REFERENCES users(id),
+                    child_id      INTEGER NOT NULL REFERENCES concepts(id),
+                    parent_id     INTEGER NOT NULL REFERENCES concepts(id),
+                    relation_type TEXT    NOT NULL,
+                    created_at    TEXT    NOT NULL DEFAULT NOW()
+                )
+            """)
             # Índices (idempotentes por IF NOT EXISTS)
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_concepts_user_id ON concepts(user_id)"
@@ -776,6 +809,21 @@ def _run_migrations_sqlite() -> None:
                 conn.execute(f"ALTER TABLE users ADD COLUMN {col} {definition}")
             except sqlite3.OperationalError:
                 pass
+
+        # ── Sprint 28: tabla concept_hierarchy ───────────────────────────────
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS concept_hierarchy (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id       INTEGER NOT NULL,
+                child_id      INTEGER NOT NULL,
+                parent_id     INTEGER NOT NULL,
+                relation_type TEXT    NOT NULL,
+                created_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (user_id)   REFERENCES users(id),
+                FOREIGN KEY (child_id)  REFERENCES concepts(id),
+                FOREIGN KEY (parent_id) REFERENCES concepts(id)
+            )
+        """)
 
         # ── Sprint 11: índices de rendimiento ────────────────────────────────
         conn.execute(

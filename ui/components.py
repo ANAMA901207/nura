@@ -1200,3 +1200,42 @@ def render_streak(streak: int, today: int, goal: int) -> None:
         progress,
         text=f"{today} de {goal} {conceptos_label} hoy",
     )
+
+
+# ── Sprint 28: árbol jerárquico ───────────────────────────────────────────────
+
+def render_tree(tree_dict: dict, depth: int = 0) -> None:
+    """
+    Renderiza el árbol jerárquico de conceptos con st.expander anidados.
+
+    Cada nodo muestra el nombre del concepto y el tipo de relación con su padre.
+    Si el árbol está vacío, muestra un mensaje informativo.
+
+    Parámetros
+    ----------
+    tree_dict : dict anidado producido por get_concept_tree().
+                Estructura: {term: {"relation": str, "children": {...}}}
+    depth     : Nivel de anidación (0 = raíz). No debe pasarse manualmente.
+    """
+    import streamlit as st
+
+    if not tree_dict:
+        st.info(
+            "🌳 Aún no hay jerarquías detectadas. "
+            "Sigue capturando conceptos y Nura irá construyendo el árbol automáticamente."
+        )
+        return
+
+    for term, node in tree_dict.items():
+        relation   = node.get("relation", "")
+        children   = node.get("children", {})
+        label_rel  = f" *({relation})*" if relation else ""
+        label      = f"{'&nbsp;' * (depth * 4)}🔵 **{term}**{label_rel}"
+
+        with st.expander(f"{'   ' * depth}🔵 {term}{('  · ' + relation) if relation else ''}", expanded=(depth == 0)):
+            if node.get("explanation"):
+                st.caption(node["explanation"])
+            if children:
+                render_tree(children, depth=depth + 1)
+            elif depth > 0:
+                st.caption("Sin subconceptos registrados.")

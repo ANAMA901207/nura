@@ -87,6 +87,7 @@ from ui.components import (
     render_insight_banner,
     render_knowledge_map,
     render_motivational_banner,   # kept for backward compat; delegates to toast
+    render_tree,
     render_motivational_toast,
     render_quiz,
     render_sources,
@@ -1678,6 +1679,22 @@ def _render_view_conectar() -> None:
 
     if not concepts:
         st.info("El mapa aparecerá cuando tengas al menos un concepto capturado.")
+        return
+
+    # ── Sprint 28: toggle Mapa / Árbol ───────────────────────────────────────
+    _vista_mode = st.radio(
+        "Vista",
+        options=["🔗 Mapa de conexiones", "🌳 Árbol jerárquico"],
+        horizontal=True,
+        label_visibility="collapsed",
+        key="conectar_vista_mode",
+    )
+
+    if _vista_mode == "🌳 Árbol jerárquico":
+        from db.operations import get_concept_tree
+        from ui.components import render_tree
+        _tree = get_concept_tree(uid)
+        render_tree(_tree)
         return
 
     # ── Selectbox de filtro rápido — encima del mapa ─────────────────────────

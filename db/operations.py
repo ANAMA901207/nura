@@ -1768,3 +1768,165 @@ def get_users_to_remind(current_time_str: str) -> "list[User]":
             (current_time_str, today_str),
         ).fetchall()
     return [_row_to_user(r) for r in rows]
+
+
+# ── Sprint 28: árbol jerárquico conceptual ────────────────────────────────────
+
+def save_hierarchy(
+    user_id: int,
+    child_id: int,
+    parent_id: int,
+    relation_type: str,
+) -> None:
+    """
+    Guarda una relación jerárquica entre dos conceptos del usuario.
+
+    Parámetros
+    ----------
+    user_id       : ID del usuario propietario.
+    child_id      : ID del concepto hijo (el más específico).
+    parent_id     : ID del concepto padre (el más general).
+    relation_type : Tipo de relación: "es_tipo_de", "contiene" o "es_parte_de".
+
+    Lanza
+    -----
+    ValueError : Si algún concepto o usuario no existe.
+    """
+    with get_connection() as conn:
+        for cid in (child_id, parent_id):
+            row = conn.execute("SELECT id FROM concepts WHERE id = ?", (cid,)).fetchone()
+            if row is None:
+                raise ValueError(f"No existe el concepto con id={cid}.")
+        created_at = datetime.now().isoformat()
+        conn.execute(
+            """
+            INSERT INTO concept_hierarchy
+                (user_id, child_id, parent_id, relation_type, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (user_id, child_id, parent_id, relation_type, created_at),
+        )
+
+
+def get_hierarchy(user_id: int) -> "list[dict]":
+    """
+    Devuelve todas las relaciones jerárquicas del usuario.
+
+    Parámetros
+    ----------
+    user_id : ID del usuario.
+
+    Devuelve
+    --------
+    list[dict] — cada dict tiene las claves:
+        id, user_id, child_id, parent_id, relation_type, created_at,
+        child_term, parent_term.
+    """
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT h.id,
+                   h.user_id,
+                   h.child_id,
+                   h.parent_id,
+                   h.relation_type,
+                   h.created_at,
+                   c.term  AS child_term,
+                   p.term  AS parent_term
+            FROM   concept_hierarchy h
+            JOIN   concepts c ON c.id = h.child_id
+            JOIN   concepts p ON p.id = h.parent_id
+            WHERE  h.user_id = ?
+            ORDER  BY h.created_at
+            """,
+            (user_id,),
+        ).fetchall()
+    result = []
+    for r in rows:
+        keys = r.keys() if hasattr(r, "keys") else []
+        result.append({
+            "id":            r["id"]            if "id"            in keys else r[0],
+            "user_id":       r["user_id"]       if "user_id"       in keys else r[1],
+            "child_id":      r["child_id"]      if "child_id"      in keys else r[2],
+            "parent_id":     r["parent_id"]     if "parent_id"     in keys else r[3],
+            "relation_type": r["relation_type"] if "relation_type" in keys else r[4],
+            "created_at":    r["created_at"]    if "created_at"    in keys else r[5],
+            "child_term":    r["child_term"]    if "child_term"    in keys else r[6],
+            "parent_term":   r["parent_term"]   if "parent_term"   in keys else r[7],
+        })
+    return result
+
+
+def get_concept_tree(user_id: int, category: "str | None" = None) -> dict:
+    """
+    Construye el árbol jerárquico de conceptos del usuario.
+
+    Parámetros
+    ----------
+    user_id  : ID del usuario.
+    category : Si se proporciona, filtra por la categoría del concepto padre.
+
+    Devuelve
+    --------
+    dict anidado — estructura recursiva:
+        {
+          "term_padre": {
+            "relation": "contiene",
+            "children": {
+              "term_hijo": {
+                "relation": "es_tipo_de",
+                "children": { ... }
+              }
+            }
+          }
+        }
+    Conceptos sin padre (raíces) aparecen en el nivel superior.
+    """
+    relations = get_hierarchy(user_id)
+
+    # Filtrar por categoría si se especifica
+    if category:
+        # Cargar términos con su categoría para filtrar
+        with get_connection() as conn:
+            cat_rows = conn.execute(
+                "SELECT id FROM concepts WHERE user_id = ? AND LOWER(category) LIKE LOWER(?)",
+                (user_id, f"%{category}%"),
+            ).fetchall()
+        cat_ids = {r[0] for r in cat_rows}
+        relations = [
+            r for r in relations
+            if r["child_id"] in cat_ids or r["parent_id"] in cat_ids
+        ]
+
+    # Índice de hijos por padre
+    children_map: dict[int, list[dict]] = {}
+    all_child_ids: set[int] = set()
+    id_to_term: dict[int, str] = {}
+
+    for rel in relations:
+        pid, cid = rel["parent_id"], rel["child_id"]
+        id_to_term[pid] = rel["parent_term"]
+        id_to_term[cid] = rel["child_term"]
+        all_child_ids.add(cid)
+        children_map.setdefault(pid, []).append(rel)
+
+    # Raíces: padres que no son hijos de nadie
+    root_ids = [pid for pid in children_map if pid not in all_child_ids]
+
+    def _build_node(concept_id: int) -> dict:
+        node: dict = {"children": {}}
+        for rel in children_map.get(concept_id, []):
+            cid = rel["child_id"]
+            child_term = id_to_term[cid]
+            node["children"][child_term] = {
+                "relation": rel["relation_type"],
+                **_build_node(cid),
+            }
+        return node
+
+    tree: dict = {}
+    for root_id in root_ids:
+        root_term = id_to_term[root_id]
+        tree[root_term] = _build_node(root_id)
+
+    return tree

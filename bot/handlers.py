@@ -84,6 +84,14 @@ async def process_update(update: dict) -> dict:
         time_str = parts[1] if len(parts) > 1 else ""
         response = handle_recordatorio(telegram_id, time_str)
 
+    elif text.startswith("/arbol"):
+        user = _get_linked_user(telegram_id)
+        if user is None:
+            response = _msg_no_vinculado()
+        else:
+            category = text[len("/arbol"):].strip() or None
+            response = handle_arbol(telegram_id, user.id, category)
+
     elif text.startswith("/podcast"):
         user = _get_linked_user(telegram_id)
         if user is None:
@@ -278,6 +286,66 @@ def handle_recordatorio(telegram_id: int | str, time_str: str) -> str:
         )
 
     return f"✅ Te recordaré todos los días a las {time_str}."
+
+
+def handle_arbol(
+    telegram_id: int | str,
+    user_id: int,
+    category: "str | None" = None,
+) -> str:
+    """
+    Genera una representación ASCII del árbol jerárquico del usuario.
+
+    Parámetros
+    ----------
+    telegram_id : ID de Telegram (no se usa en la lógica, solo para firma).
+    user_id     : ID del usuario en Nura.
+    category    : Si se proporciona, filtra por esa categoría.
+
+    Devuelve
+    --------
+    str — árbol en texto ASCII listo para enviar a Telegram.
+    """
+    from db.operations import get_concept_tree
+
+    tree = get_concept_tree(user_id, category=category)
+
+    if not tree:
+        if category:
+            return f"🌳 No hay jerarquías registradas para la categoría '{category}'."
+        return (
+            "🌳 Aún no hay jerarquías registradas.\n"
+            "Sigue capturando conceptos y Nura construirá el árbol automáticamente."
+        )
+
+    lines: list[str] = []
+    if category:
+        lines.append(f"🌳 Árbol jerárquico — {category}\n")
+    else:
+        lines.append("🌳 Árbol jerárquico completo\n")
+
+    def _render_node(node: dict, prefix: str = "", is_last: bool = True) -> None:
+        children = node.get("children", {})
+        items    = list(children.items())
+        for i, (child_term, child_node) in enumerate(items):
+            last      = i == len(items) - 1
+            connector = "└──" if last else "├──"
+            rel       = child_node.get("relation", "")
+            rel_txt   = f" [{rel}]" if rel else ""
+            lines.append(f"{prefix}{connector} {child_term}{rel_txt}")
+            extension = "    " if last else "│   "
+            _render_node(child_node, prefix=prefix + extension, is_last=last)
+
+    for root_term, root_node in tree.items():
+        lines.append(f"📌 {root_term}")
+        _render_node(root_node)
+        lines.append("")
+
+    result = "\n".join(lines).rstrip()
+    # Telegram tiene límite de 4096 caracteres
+    if len(result) > 4000:
+        result = result[:4000] + "\n…(truncado)"
+    return result
 
 
 async def handle_podcast(telegram_id: int | str, user_id: int) -> dict:
