@@ -232,6 +232,152 @@ def _build_knowledge_context(concepts: list) -> str:
     return "\n".join(lines)
 
 
+_SIMILARITY_STOPWORDS: frozenset[str] = frozenset({
+    "el", "la", "los", "las", "un", "una", "de", "que", "qué", "y", "o", "en",
+    "a", "al", "con", "por", "para", "es", "son", "como", "cómo", "se", "su", "sus",
+    "tu", "tus", "mi", "mis", "del", "lo", "le", "les", "the", "an", "and", "or",
+    "is", "are", "in", "on", "to", "of", "for", "with", "what", "how", "why", "when",
+    "donde", "dónde", "cual", "cuál", "cuales", "cuáles", "me", "te", "nos", "os",
+})
+
+
+def _tokenize_for_similarity(text: str) -> set[str]:
+    """Extrae tokens alfanuméricos útiles para comparar similitud pregunta↔concepto."""
+    if not text:
+        return set()
+    raw = re.sub(r"[^\w\sáéíóúñüÁÉÍÓÚÑÜ]", " ", text.lower())
+    return {
+        w for w in raw.split()
+        if len(w) >= 2 and w not in _SIMILARITY_STOPWORDS
+    }
+
+
+def _similarity_score(question: str, concept) -> int:
+    """
+    Puntuación heurística: solapamiento término/pregunta, subcategoría y categoría.
+    Retorna 0 si no hay señal suficiente (no forzar conexiones falsas).
+    """
+    q_tokens = _tokenize_for_similarity(question)
+    if not q_tokens:
+        return 0
+    term_tok = _tokenize_for_similarity(getattr(concept, "term", "") or "")
+    sub_tok  = _tokenize_for_similarity(getattr(concept, "subcategory", "") or "")
+    cat      = (getattr(concept, "category", "") or "").strip().lower()
+    q_lower  = question.lower()
+    score    = 0
+    score   += len(q_tokens & term_tok) * 5
+    score   += len(q_tokens & sub_tok) * 3
+    if cat:
+        if cat in q_lower:
+            score += 8
+        else:
+            for tok in q_tokens:
+                if tok in cat:
+                    score += 4
+                    break
+    return score
+
+
+def build_similar_concepts_prompt_section(
+    question: str,
+    concepts: list,
+    limit: int = 5,
+) -> str:
+    """
+    Construye el bloque opcional del prompt con conceptos del mapa similares al tema.
+
+    Solo incluye conceptos con puntuación > 0 (categoría o palabras clave alineadas
+    con la pregunta). Si ninguno califica, retorna cadena vacía.
+
+    Expuesto para tests del Sprint 29.
+    """
+    if not concepts or not (question or "").strip():
+        return ""
+
+    scored: list[tuple[int, object]] = []
+    for c in concepts:
+        sc = _similarity_score(question, c)
+        if sc > 0:
+            scored.append((sc, c))
+
+    if not scored:
+        return ""
+
+    scored.sort(key=lambda t: -t[0])
+    top = [c for _, c in scored[:limit]]
+
+    parts: list[str] = []
+    for c in top:
+        term = getattr(c, "term", "") or ""
+        cat  = getattr(c, "category", "") or ""
+        if cat:
+            parts.append(f"{term} (categoría {cat})")
+        else:
+            parts.append(term)
+
+    joined = ", ".join(parts)
+    return (
+        "Conceptos que ya conoces relacionados con este tema:\n\n"
+        f"El usuario ya conoce: {joined}. "
+        "Conecta tu explicación con lo que ya sabe."
+    )
+
+
+def simplify_explanation(text: str, user_profile: dict) -> str:
+    """
+    Reformula una explicación con lenguaje más simple (máx. ~150 palabras).
+
+    Llama a Gemini. Si falla la API o el resultado está vacío, retorna el texto original.
+
+    Parámetros
+    ----------
+    text          : Explicación a simplificar.
+    user_profile  : Perfil del usuario (profession, learning_area, tech_level);
+                    puede ser dict vacío.
+
+    Devuelve
+    --------
+    str — texto simplificado o el original si hay error.
+    """
+    if not (text or "").strip():
+        return text or ""
+
+    api_key = os.environ.get("GOOGLE_API_KEY")
+    if not api_key:
+        return text
+
+    profile_hint = ""
+    if user_profile:
+        prof = (user_profile.get("profession") or "").strip()
+        area = (user_profile.get("learning_area") or "").strip()
+        if prof or area:
+            profile_hint = (
+                f"\nContexto del lector: profesión «{prof or 'no indicada'}», "
+                f"áreas de interés «{area or 'no indicadas'}»."
+            )
+
+    prompt = (
+        "Reformula esta explicación de manera más simple, con lenguaje cotidiano "
+        "y ejemplos concretos. Máximo 150 palabras."
+        f"{profile_hint}\n\nExplicación original:\n{text}"
+    )
+
+    try:
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        from langchain_core.messages import HumanMessage
+
+        llm = ChatGoogleGenerativeAI(
+            model=GEMINI_MODEL,
+            google_api_key=api_key,  # type: ignore[call-arg]
+            temperature=0.4,
+        )
+        out = _call_gemini(llm, [HumanMessage(content=prompt)])
+        stripped = (out or "").strip()
+        return stripped if stripped else text
+    except Exception:
+        return text
+
+
 def _build_search_context(search_results: list[dict]) -> str:
     """
     Construye el bloque de contexto con los resultados de busqueda web.
@@ -612,8 +758,14 @@ def tutor_agent(state: NuraState) -> dict:
     # respuesta canned para no gastar cuota de API en inputs triviales.
     if state.get("mode") == "chat":
         user_input = state.get("user_input", "").strip()
+        out = _chat_response(user_input)
+        try:
+            from db.operations import save_last_tutor_response
+            save_last_tutor_response(state.get("user_id", 1), out)
+        except Exception:
+            pass
         return {
-            "response": _chat_response(user_input),
+            "response": out,
             "sources": [],
         }
 
@@ -673,9 +825,13 @@ def tutor_agent(state: NuraState) -> dict:
         # ── Paso 3: construir contexto de BD ──────────────────────────────────
         concepts = get_all_concepts(user_id=user_id)
         knowledge_ctx = _build_knowledge_context(concepts)
+        similar_ctx = build_similar_concepts_prompt_section(question, concepts)
 
         # ── Paso 4: construir el mensaje completo ─────────────────────────────
         human_parts: list[str] = []
+        if similar_ctx:
+            human_parts.append(similar_ctx)
+            human_parts.append("")
         if knowledge_ctx:
             human_parts.append(knowledge_ctx)
             human_parts.append("")
@@ -748,6 +904,12 @@ def tutor_agent(state: NuraState) -> dict:
             )
         except Exception:
             suggested_concepts = []
+
+        try:
+            from db.operations import save_last_tutor_response
+            save_last_tutor_response(user_id, tutor_response)
+        except Exception:
+            pass
 
         return {
             "response":           tutor_response,

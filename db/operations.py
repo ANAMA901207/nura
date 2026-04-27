@@ -172,6 +172,7 @@ def _row_to_user(row: Any) -> User:
         link_code=row["link_code"]               if "link_code"        in keys else None,
         link_code_expiry=row["link_code_expiry"] if "link_code_expiry" in keys else None,
         reminder_time=row["reminder_time"]       if "reminder_time"    in keys else "20:00",
+        last_tutor_response=row["last_tutor_response"] if "last_tutor_response" in keys else None,
     )
 
 
@@ -1155,7 +1156,17 @@ def get_streak(user_id: int = 1) -> int:
                 """,
                 (user_id, date_str),
             ).fetchone()
-            if row and row["cnt"] > 0:
+            cnt = 0
+            if row is not None:
+                keys = row.keys() if hasattr(row, "keys") else []
+                if "cnt" in keys:
+                    cnt = int(row["cnt"])
+                else:
+                    try:
+                        cnt = int(row[0])
+                    except (KeyError, IndexError, TypeError, ValueError):
+                        cnt = 0
+            if cnt > 0:
                 streak += 1
                 check_date -= timedelta(days=1)
             else:
@@ -1768,6 +1779,43 @@ def get_users_to_remind(current_time_str: str) -> "list[User]":
             (current_time_str, today_str),
         ).fetchall()
     return [_row_to_user(r) for r in rows]
+
+
+# ── Sprint 29: última respuesta del tutor (contexto /simple) ─────────────────
+
+def save_last_tutor_response(user_id: int, text: str) -> None:
+    """
+    Persiste la última respuesta del tutor para el usuario.
+
+    Se usa desde tutor_agent tras cada respuesta del nodo tutor y desde
+    cualquier cliente que invoque el grafo en modo pregunta/chat.
+    """
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE users SET last_tutor_response = ? WHERE id = ?",
+            (text, user_id),
+        )
+
+
+def get_last_tutor_response(user_id: int) -> "str | None":
+    """
+    Devuelve la última respuesta del tutor guardada para el usuario, o None.
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT last_tutor_response FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    keys = row.keys() if hasattr(row, "keys") else []
+    if "last_tutor_response" in keys:
+        val = row["last_tutor_response"]
+    else:
+        val = row[0]
+    if val is None or (isinstance(val, str) and not val.strip()):
+        return None
+    return str(val)
 
 
 # ── Sprint 28: árbol jerárquico conceptual ────────────────────────────────────

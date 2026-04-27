@@ -84,6 +84,13 @@ async def process_update(update: dict) -> dict:
         time_str = parts[1] if len(parts) > 1 else ""
         response = handle_recordatorio(telegram_id, time_str)
 
+    elif text.startswith("/simple"):
+        user = _get_linked_user(telegram_id)
+        if user is None:
+            response = _msg_no_vinculado()
+        else:
+            response = handle_simple(telegram_id, user.id)
+
     elif text.startswith("/arbol"):
         user = _get_linked_user(telegram_id)
         if user is None:
@@ -286,6 +293,31 @@ def handle_recordatorio(telegram_id: int | str, time_str: str) -> str:
         )
 
     return f"✅ Te recordaré todos los días a las {time_str}."
+
+
+def handle_simple(telegram_id: int | str, user_id: int) -> str:
+    """
+    Simplifica la última respuesta del tutor guardada para el usuario.
+
+    Si no hay respuesta previa en BD, devuelve un mensaje amigable.
+    """
+    from db.operations import get_last_tutor_response, get_user_by_id
+    from agents.tutor_agent import simplify_explanation
+
+    last = get_last_tutor_response(user_id)
+    if not last:
+        return "Primero hazme una pregunta y luego usa /simple"
+
+    user = get_user_by_id(user_id)
+    profile: dict = {}
+    if user is not None:
+        profile = {
+            "profession":    getattr(user, "profession", "") or "",
+            "learning_area": getattr(user, "learning_area", "") or "",
+            "tech_level":    getattr(user, "tech_level", "") or "",
+        }
+
+    return simplify_explanation(last, profile)
 
 
 def handle_arbol(

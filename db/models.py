@@ -186,3 +186,5 @@ class User:
     link_code_expiry: Optional[str] = None
     # Sprint 26: hora de recordatorio diario
     reminder_time: str = "20:00"
+    # Sprint 29: última respuesta del tutor (para /simple y botón en UI)
+    last_tutor_response: Optional[str] = None

@@ -956,6 +956,34 @@ def _render_view_descubrir() -> None:
                     unsafe_allow_html=True,
                 )
 
+                # Sprint 29: simplificar explicación del tutor
+                if mode in ("question", "chat") and response_text.strip():
+                    _simp_key = f"simplified_txt_{hist_idx}"
+                    if st.button(
+                        "🔄 Explícame más simple",
+                        key=f"simplify_btn_{hist_idx}",
+                    ):
+                        from agents.tutor_agent import simplify_explanation
+                        with st.spinner("Simplificando..."):
+                            st.session_state[_simp_key] = simplify_explanation(
+                                response_text,
+                                st.session_state.get("user_profile", {}),
+                            )
+                        st.rerun()
+                    _simp_out = st.session_state.get(_simp_key)
+                    if _simp_out:
+                        st.markdown(
+                            "<p style='color:#a6e3a1; font-size:0.78rem; margin:0.5rem 0 0.25rem 0;'>"
+                            "Versión más simple</p>",
+                            unsafe_allow_html=True,
+                        )
+                        st.markdown(
+                            f"<div style='color:#a6e3a1; font-size:0.9rem; padding:0.85rem 1rem; "
+                            f"background:#1e2e1e; border-radius:10px; border:1px solid #a6e3a144; "
+                            f"line-height:1.7;'>{_html.escape(str(_simp_out))}</div>",
+                            unsafe_allow_html=True,
+                        )
+
                 # Fuentes web debajo de la respuesta (solo en modo question)
                 if mode == "question" and sources:
                     render_sources(sources)
