@@ -26,6 +26,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
+
+from agents.gemini_llm import GEMINI_REQUEST_TIMEOUT_SEC
 from langchain_core.messages import HumanMessage, SystemMessage
 
 # Carga las variables de entorno desde el .env más cercano hacia la raíz.
@@ -157,6 +159,7 @@ def classify_concept(
             model=GEMINI_MODEL,
             google_api_key=api_key,  # type: ignore[call-arg]
             temperature=0,           # respuestas deterministas para JSON estructurado
+            request_timeout=GEMINI_REQUEST_TIMEOUT_SEC,
         )
 
         human_text = f"Término: {term}"

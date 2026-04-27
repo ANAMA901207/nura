@@ -29,6 +29,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from db.operations import get_all_concepts
+from agents.gemini_llm import GEMINI_REQUEST_TIMEOUT_SEC
 from agents.state import NuraState
 
 load_dotenv(Path(__file__).parent.parent / ".env")
@@ -182,6 +183,7 @@ def quiz_agent(state: NuraState) -> dict:
         model=GEMINI_MODEL,
         google_api_key=api_key,  # type: ignore[call-arg]
         temperature=0.4,
+        request_timeout=GEMINI_REQUEST_TIMEOUT_SEC,
     )
 
     messages = [

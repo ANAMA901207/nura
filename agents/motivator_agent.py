@@ -152,6 +152,8 @@ def _gemini_message(event_type: str, stats: dict) -> str:
     from langchain_google_genai import ChatGoogleGenerativeAI
     from langchain_core.messages import HumanMessage
 
+    from agents.gemini_llm import GEMINI_REQUEST_TIMEOUT_SEC
+
     stats_str = (
         f"conceptos_hoy={stats.get('conceptos_hoy', 0)}, "
         f"conexiones_hoy={stats.get('conexiones_hoy', 0)}, "
@@ -172,7 +174,11 @@ def _gemini_message(event_type: str, stats: dict) -> str:
     )
 
     model_name = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
-    llm = ChatGoogleGenerativeAI(model=model_name, temperature=0.7)
+    llm = ChatGoogleGenerativeAI(
+        model=model_name,
+        temperature=0.7,
+        request_timeout=GEMINI_REQUEST_TIMEOUT_SEC,
+    )
     response = llm.invoke([HumanMessage(content=prompt)])
     text = response.content.strip().strip('"').strip("'")
     return text if text else _fallback_message(event_type)

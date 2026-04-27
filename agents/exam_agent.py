@@ -19,6 +19,8 @@ from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 
+from agents.gemini_llm import GEMINI_REQUEST_TIMEOUT_SEC
+
 load_dotenv(Path(__file__).parent.parent / ".env")
 
 GEMINI_MODEL: str = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
@@ -124,6 +126,7 @@ def generate_exam(
         model=GEMINI_MODEL,
         google_api_key=api_key,  # type: ignore[call-arg]
         temperature=0.35,
+        request_timeout=GEMINI_REQUEST_TIMEOUT_SEC,
     )
     messages = [
         SystemMessage(content=EXAM_SYSTEM_PROMPT),

@@ -59,12 +59,15 @@ def _call_gemini_json(prompt: str) -> dict:
     from langchain_google_genai import ChatGoogleGenerativeAI
     from langchain_core.messages import HumanMessage
 
+    from agents.gemini_llm import GEMINI_REQUEST_TIMEOUT_SEC
+
     model_name = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
     api_key    = os.environ.get("GOOGLE_API_KEY")
     llm = ChatGoogleGenerativeAI(
         model=model_name,
         google_api_key=api_key,  # type: ignore[call-arg]
         temperature=0,
+        request_timeout=GEMINI_REQUEST_TIMEOUT_SEC,
     )
     response = llm.invoke([HumanMessage(content=prompt)])
     text = str(response.content).strip()

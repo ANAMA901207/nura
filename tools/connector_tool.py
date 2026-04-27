@@ -20,6 +20,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
+
+from agents.gemini_llm import GEMINI_REQUEST_TIMEOUT_SEC
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from db.models import Concept
@@ -130,6 +132,7 @@ def find_connections(
         model=GEMINI_MODEL,
         google_api_key=api_key,  # type: ignore[call-arg]
         temperature=0,
+        request_timeout=GEMINI_REQUEST_TIMEOUT_SEC,
     )
 
     existing_list = "\n".join(

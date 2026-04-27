@@ -118,8 +118,14 @@ Si no hay relaciones: []"""
         from langchain_google_genai import ChatGoogleGenerativeAI
         from langchain_core.messages import HumanMessage
 
+        from agents.gemini_llm import GEMINI_REQUEST_TIMEOUT_SEC
+
         model_name = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
-        llm = ChatGoogleGenerativeAI(model=model_name, temperature=0)
+        llm = ChatGoogleGenerativeAI(
+            model=model_name,
+            temperature=0,
+            request_timeout=GEMINI_REQUEST_TIMEOUT_SEC,
+        )
         response = llm.invoke([HumanMessage(content=prompt)])
         raw = response.content.strip()
 

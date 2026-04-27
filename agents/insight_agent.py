@@ -93,6 +93,8 @@ def insight_agent(state: NuraState) -> dict:
         from langchain_google_genai import ChatGoogleGenerativeAI
         from langchain_core.messages import HumanMessage, SystemMessage
 
+        from agents.gemini_llm import GEMINI_REQUEST_TIMEOUT_SEC
+
         data = get_weekly_insight_data(user_id=user_id)
         weak_cats = get_weak_categories(user_id=user_id)
         context = _build_insight_context(data, weak_cats, classified)
@@ -101,6 +103,7 @@ def insight_agent(state: NuraState) -> dict:
             model=GEMINI_MODEL,
             google_api_key=api_key,
             temperature=0.7,
+            request_timeout=GEMINI_REQUEST_TIMEOUT_SEC,
         )
         response = llm.invoke([
             SystemMessage(content=_INSIGHT_SYSTEM_PROMPT),

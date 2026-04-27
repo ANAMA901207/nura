@@ -26,6 +26,7 @@ import os
 import re
 import time
 from pathlib import Path
+from typing import Any
 
 
 def _parse_tech_level(tech_level_str: str) -> dict[str, str]:
@@ -59,6 +60,7 @@ from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
 from db.operations import get_all_concepts
 from tools.search_tool import web_search
+from agents.gemini_llm import GEMINI_REQUEST_TIMEOUT_SEC
 from agents.state import NuraState
 
 # Sprint 19: lista completa de tools Nura (ToolNode en graph, introspección en tests).
@@ -76,6 +78,9 @@ except ImportError:
 load_dotenv(Path(__file__).parent.parent / ".env")
 
 GEMINI_MODEL: str = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+
+# Máximo de vueltas tutor→tools→tutor (Sprint 33); salida clara si se agota.
+MAX_TUTOR_TOOL_ROUNDS: int = 8
 
 # ── Prompts ────────────────────────────────────────────────────────────────────
 
@@ -405,6 +410,7 @@ def simplify_explanation(text: str, user_profile: dict) -> str:
             model=GEMINI_MODEL,
             google_api_key=api_key,  # type: ignore[call-arg]
             temperature=0.4,
+            request_timeout=GEMINI_REQUEST_TIMEOUT_SEC,
         )
         out = _call_gemini(llm, [HumanMessage(content=prompt)])
         stripped = (out or "").strip()
@@ -518,6 +524,7 @@ def _friendly_api_error(exc: Exception) -> str:
             "(Error 403 / PERMISSION_DENIED)"
         )
     if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+        print(f"[DEBUG tutor error] {type(exc).__name__}: {exc}")
         return (
             "El servicio de IA está saturado ahora mismo. "
             "Espera unos minutos y vuelve a intentarlo. 🌙"
@@ -579,6 +586,35 @@ def _call_gemini(llm: "ChatGoogleGenerativeAI", messages: list, retries: int = 3
                     continue
             raise
     raise RuntimeError("Gemini fallo tras todos los intentos por rate limit")
+
+
+def _normalize_tool_calls_for_tutor(ai_msg: object) -> list[dict[str, Any]]:
+    """
+    Convierte ``tool_calls`` del AIMessage en dicts {name, id, args}.
+
+    Si el proveedor devuelve un tipo inesperado o una lista vacía de nombres
+    válidos, retorna [] para tratar como «sin tools» y salir del bucle.
+    """
+    raw = getattr(ai_msg, "tool_calls", None)
+    if raw is None or not isinstance(raw, (list, tuple)):
+        return []
+    out: list[dict[str, Any]] = []
+    for tc in raw:
+        if isinstance(tc, dict):
+            name = (tc.get("name") or "").strip()
+            tid = tc.get("id") or tc.get("tool_call_id") or ""
+            args = tc.get("args")
+            if not isinstance(args, dict):
+                args = {}
+        else:
+            name = str(getattr(tc, "name", "") or "").strip()
+            tid = getattr(tc, "id", None) or getattr(tc, "tool_call_id", None) or ""
+            args = getattr(tc, "args", None)
+            if not isinstance(args, dict):
+                args = {}
+        if name:
+            out.append({"name": name, "id": str(tid) if tid is not None else "", "args": args})
+    return out
 
 
 # ── Sprint 15: system prompt adaptado al perfil de usuario ────────────────────
@@ -828,6 +864,7 @@ def tutor_agent(state: NuraState) -> dict:
             model=GEMINI_MODEL,
             google_api_key=api_key,  # type: ignore[call-arg]
             temperature=0.3,
+            request_timeout=GEMINI_REQUEST_TIMEOUT_SEC,
         )
 
         # ── Paso 1: clasificar si la pregunta necesita web search ─────────────
@@ -882,6 +919,7 @@ def tutor_agent(state: NuraState) -> dict:
             model=GEMINI_MODEL,
             google_api_key=api_key,  # type: ignore[call-arg]
             temperature=0.7,
+            request_timeout=GEMINI_REQUEST_TIMEOUT_SEC,
         )
         tutor_response = ""
         if TUTOR_BIND_TOOLS:
@@ -891,17 +929,17 @@ def tutor_agent(state: NuraState) -> dict:
                 SystemMessage(content=tutor_sys_prompt),
                 HumanMessage(content=human_text),
             ]
-            for _ in range(8):
+            for _round_idx in range(MAX_TUTOR_TOOL_ROUNDS):
                 ai_msg = bound.invoke(messages_lc)
-                tcalls = getattr(ai_msg, "tool_calls", None) or []
+                tcalls = _normalize_tool_calls_for_tutor(ai_msg)
                 if not tcalls:
                     tutor_response = (str(ai_msg.content) or "").strip()
                     break
                 messages_lc.append(ai_msg)
                 for tc in tcalls:
-                    name = tc.get("name") or ""
-                    tid = tc.get("id") or ""
-                    args = dict(tc.get("args") or {})
+                    name = tc["name"]
+                    tid = tc["id"]
+                    args = dict(tc["args"])
                     if name in ("lookup_hierarchy", "lookup_concepts"):
                         args["user_id"] = user_id
                     tool_fn = tool_by_name.get(name)
@@ -923,6 +961,7 @@ def tutor_agent(state: NuraState) -> dict:
                             pass
                     messages_lc.append(ToolMessage(content=out_s, tool_call_id=tid))
             else:
+                # Se alcanzó MAX_TUTOR_TOOL_ROUNDS sin respuesta final sin tool_calls.
                 tutor_response = (
                     "No pude completar la respuesta con las herramientas disponibles."
                 )
