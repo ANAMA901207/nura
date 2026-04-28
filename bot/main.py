@@ -62,6 +62,26 @@ _FALLBACK_PROCESS_MSG = (
 )
 
 
+def _extract_sendable_text(result: dict) -> str:
+    """
+    Obtiene el cuerpo de texto plano para sendMessage.
+
+    ``process_update`` suele poner un str en ``text``, pero en algunos caminos
+    el valor puede venir anidado como dict (p. ej. ``{'type': 'text', 'text': '…'}``).
+    """
+    t: object = result.get("text", "")
+    for _ in range(5):
+        if isinstance(t, str):
+            return t
+        if isinstance(t, dict):
+            t = t.get("text", t.get("body", t.get("message", "")))
+            continue
+        if t is None:
+            return ""
+        return str(t)
+    return ""
+
+
 def _chat_id_from_update(update: dict) -> int | None:
     """Extrae chat_id del update de Telegram para poder enviar fallback si falla el pipeline."""
     message = update.get("message") or update.get("edited_message")
@@ -184,9 +204,11 @@ async def _process_and_send(token: str, update: dict) -> None:
         if result.get("type") == "voice" and result.get("audio_bytes"):
             await _send_voice(token, chat_id, result["audio_bytes"])
             sent_something = True
-        elif result.get("text"):
-            await _send_message(token, chat_id, result["text"])
-            sent_something = True
+        else:
+            outbound = _extract_sendable_text(result).strip()
+            if outbound:
+                await _send_message(token, chat_id, outbound)
+                sent_something = True
 
         if not sent_something:
             print(
