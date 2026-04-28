@@ -133,19 +133,26 @@ def test_get_concepts_by_week_empty(tmp_db):
 
 
 def test_brechas_command_no_orphans(tmp_db):
+    import asyncio
+
     from bot.handlers import handle_brechas
 
     uid = create_user("br1", "t" * 60).id
-    out = handle_brechas(0, uid)
+    out = asyncio.run(handle_brechas(0, uid))
     assert "bien conectado" in out.lower()
 
 
 def test_brechas_command_with_orphans(tmp_db):
+    import asyncio
+    from unittest.mock import patch
+
     from bot.handlers import handle_brechas
 
     uid = create_user("br2", "u" * 60).id
     save_concept("LangGraph", user_id=uid)
-    out = handle_brechas(0, uid)
+    with patch("bot.nura_bridge.run_tutor", return_value="Conectá LangGraph con tus nodos de captura."):
+        out = asyncio.run(handle_brechas(0, uid))
     assert "LangGraph" in out
-    assert "/tutor" in out
-    assert "relaciona" in out.lower()
+    assert "/tutor" not in out
+    assert "Sugerencia del tutor" in out
+    assert "relaciona" in out.lower() or "langgraph" in out.lower()

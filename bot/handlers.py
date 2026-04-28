@@ -192,12 +192,26 @@ async def handle_examen_command(
             "tech_level":    getattr(user, "tech_level", "") or "",
         }
 
-    questions = await asyncio.to_thread(
-        generate_exam,
-        resolved,
-        concepts_payload,
-        profile,
-    )
+    try:
+        questions = await asyncio.to_thread(
+            generate_exam,
+            resolved,
+            concepts_payload,
+            profile,
+        )
+    except Exception as exc:
+        import traceback
+        print(
+            f"[NuraBot] /examen generate_exam falló — "
+            f"{type(exc).__name__}: {exc}"
+        )
+        traceback.print_exc()
+        return (
+            "No pude generar el examen ahora (error al llamar al modelo). "
+            "Revisá tu clave de API y probá más tarde. "
+            f"Detalle técnico: {type(exc).__name__}"
+        )
+
     if not questions:
         return "No pude generar el examen ahora. Probá de nuevo más tarde."
 
@@ -300,7 +314,7 @@ async def process_update(update: dict) -> dict:
         if user is None:
             response = _msg_no_vinculado()
         else:
-            response = handle_brechas(telegram_id, user.id)
+            response = await handle_brechas(telegram_id, user.id)
 
     elif text.startswith("/perfil"):
         user = _get_linked_user(telegram_id)
@@ -330,7 +344,12 @@ async def process_update(update: dict) -> dict:
     else:
         user_ex = _get_linked_user(telegram_id)
         if user_ex is not None:
-            exam_reply = try_handle_exam_answer(user_ex.id, text)
+            try:
+                exam_reply = try_handle_exam_answer(user_ex.id, text)
+            except Exception as exc:
+                # BD sin migración de examen o error transitorio: no bloquear el chat.
+                print(f"[NuraBot] try_handle_exam_answer omitido: {type(exc).__name__}: {exc}")
+                exam_reply = None
             if exam_reply is not None:
                 return {"chat_id": chat_id, "text": exam_reply, "handled": True}
         response = await handle_free_message(telegram_id, text)  # async: llama IA
@@ -379,24 +398,47 @@ def handle_start(telegram_id: int | str, username: str) -> str:
     )
 
 
-def handle_brechas(_telegram_id: int | str, user_id: int) -> str:
-    """Lista conceptos huérfanos (sin conexiones) con sugerencia de exploración."""
+async def handle_brechas(_telegram_id: int | str, user_id: int) -> str:
+    """
+    Lista conceptos huérfanos (sin conexiones) y pide al tutor una pista
+    para el primer término (sin comando /tutor, que no existe en Telegram).
+    """
     from db.operations import get_orphan_concepts
+    from bot.nura_bridge import run_tutor
 
     orphans = get_orphan_concepts(user_id)
     if not orphans:
         return "¡Tu mapa está bien conectado! No tienes conceptos aislados."
     lines = ["*Conceptos sin conexión* (primeros 5):\n"]
+    first_term: str | None = None
     for o in orphans[:5]:
         t = str(o.get("term", "")).strip()
         if not t:
             continue
-        lines.append(
-            f"• *{t}* — prueba /tutor ¿Cómo se relaciona {t} con lo que ya sé?"
-        )
+        if first_term is None:
+            first_term = t
+        lines.append(f"• *{t}*")
     if len(orphans) > 5:
         lines.append(f"\n…y {len(orphans) - 5} más.")
-    return "\n".join(lines)
+
+    body = "\n".join(lines)
+    if first_term:
+        question = (
+            f"¿Cómo podría conectar el concepto «{first_term}» con otros "
+            "que ya tengo en mi mapa de conocimiento? Respuesta breve (máx. 3 párrafos)."
+        )
+        try:
+            tutor_hint = await asyncio.to_thread(run_tutor, user_id, question)
+            body += "\n\n💡 *Sugerencia del tutor:*\n" + (tutor_hint or "").strip()
+        except Exception as exc:
+            import traceback
+            print(f"[NuraBot] /brechas tutor falló: {type(exc).__name__}: {exc}")
+            traceback.print_exc()
+            body += (
+                "\n\n_(No pude consultar al tutor ahora; enviá tu pregunta como mensaje "
+                "libre cuando quieras.)_"
+            )
+    return body
 
 
 def handle_perfil(_telegram_id: int | str, user_id: int) -> str:
@@ -717,6 +759,23 @@ async def handle_audio(telegram_id: int | str, user_id: int, term: str) -> dict:
         return {"chat_id": telegram_id, "text": fallback, "type": "text", "handled": True}
 
 
+# Saludos cortos: usuario ya vinculado → respuesta cercana, no texto de /start.
+_GREETING_SHORT: frozenset[str] = frozenset({
+    "hola", "hi", "hey", "buenas", "buenos dias", "buenos días",
+    "buenas tardes", "buenas noches", "hello", "holaa", "ola",
+})
+
+
+def _is_short_greeting(texto: str) -> bool:
+    t = (texto or "").strip().lower()
+    for ch in "¡!¿?.":
+        t = t.replace(ch, "")
+    t = t.strip()
+    if not t or " " in t:
+        return False
+    return t in _GREETING_SHORT
+
+
 async def handle_free_message(telegram_id: int | str, texto: str) -> str:
     """
     Envía un mensaje libre al tutor de Nura con el contexto completo del usuario.
@@ -727,6 +786,12 @@ async def handle_free_message(telegram_id: int | str, texto: str) -> str:
     user = _get_linked_user(telegram_id)
     if user is None:
         return _msg_no_vinculado()
+
+    if _is_short_greeting(texto):
+        uname = getattr(user, "username", "") or "explorador"
+        return (
+            f"¡Hola, *{uname}*! 👋 Soy Nura. ¿Qué querés aprender o repasar hoy?"
+        )
 
     from bot.nura_bridge import run_tutor
     return await asyncio.to_thread(run_tutor, user.id, texto)

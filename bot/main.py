@@ -56,6 +56,25 @@ from bot.scheduler import run_scheduler
 
 _TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
 
+_FALLBACK_PROCESS_MSG = (
+    "Tuve un problema al generar la respuesta (puede tardar o haber un fallo temporal). "
+    "Probá de nuevo en unos segundos."
+)
+
+
+def _chat_id_from_update(update: dict) -> int | None:
+    """Extrae chat_id del update de Telegram para poder enviar fallback si falla el pipeline."""
+    message = update.get("message") or update.get("edited_message")
+    if not message:
+        return None
+    cid = message.get("chat", {}).get("id")
+    if cid is None:
+        return None
+    try:
+        return int(cid)
+    except (TypeError, ValueError):
+        return None
+
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────────
 
@@ -138,21 +157,53 @@ async def _process_and_send(token: str, update: dict) -> None:
 
     Si el resultado tiene type='voice' → usa sendVoice (OGG/OPUS).
     Si no → usa sendMessage como siempre.
-    Los errores se registran en consola sin propagar excepciones.
+    Cualquier error o respuesta vacía: log en consola y mensaje de fallback al usuario.
     """
+    chat_id_early = _chat_id_from_update(update)
+
     try:
         result = await process_update(update)
+    except Exception as exc:
+        import traceback
+        print(f"[NuraBot] _process_and_send — error en process_update: {type(exc).__name__}: {exc}")
+        traceback.print_exc()
+        if token and chat_id_early is not None:
+            try:
+                await _send_message(token, chat_id_early, _FALLBACK_PROCESS_MSG)
+            except Exception as send_exc:
+                print(f"[NuraBot] No se pudo enviar mensaje de fallback: {send_exc}")
+        return
+
+    try:
         if not (result.get("handled") and result.get("chat_id") and token):
             return
 
         chat_id = result["chat_id"]
+        sent_something = False
 
         if result.get("type") == "voice" and result.get("audio_bytes"):
             await _send_voice(token, chat_id, result["audio_bytes"])
+            sent_something = True
         elif result.get("text"):
             await _send_message(token, chat_id, result["text"])
+            sent_something = True
+
+        if not sent_something:
+            print(
+                f"[NuraBot] Respuesta sin texto ni voz (chat_id={chat_id}): "
+                f"keys={list(result.keys())}"
+            )
+            await _send_message(token, chat_id, _FALLBACK_PROCESS_MSG)
     except Exception as exc:
-        print(f"[NuraBot] Error en background task: {exc}")
+        import traceback
+        print(f"[NuraBot] _process_and_send — error al enviar a Telegram: {type(exc).__name__}: {exc}")
+        traceback.print_exc()
+        cid = result.get("chat_id") or chat_id_early
+        if token and cid is not None:
+            try:
+                await _send_message(token, int(cid), _FALLBACK_PROCESS_MSG)
+            except Exception as send_exc:
+                print(f"[NuraBot] No se pudo enviar mensaje de fallback: {send_exc}")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

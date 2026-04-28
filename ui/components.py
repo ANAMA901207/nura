@@ -80,7 +80,7 @@ def render_concept_card(
     concept: "Concept",
     show_edit: bool = False,
     show_actions: bool = False,
-    card_index: int = 0,
+    card_index: int | str = 0,
 ) -> None:
     """
     Renderiza un concepto completo con todas sus capas de conocimiento.

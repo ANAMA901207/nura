@@ -117,9 +117,33 @@ def generate_podcast_text(user_id: int) -> str:
     pending       = len(pending_list)
     all_concepts  = get_all_concepts(user_id)
 
-    # Hasta 3 conceptos más recientes
-    sorted_concepts = sorted(all_concepts, key=lambda c: c.created_at, reverse=True)
-    recent_terms    = [c.term for c in sorted_concepts[:3]]
+    def _concept_term_only(c: object) -> str:
+        """Solo el campo `term` del concepto (nunca id, categoría ni __str__)."""
+        raw = getattr(c, "term", None)
+        if raw is None:
+            return ""
+        return str(raw).strip()
+
+    def _concept_recency_key(c: object) -> tuple:
+        ca = getattr(c, "created_at", None)
+        if hasattr(ca, "timestamp"):
+            try:
+                ts = float(ca.timestamp())
+            except (OSError, ValueError, TypeError):
+                ts = 0.0
+        else:
+            ts = 0.0
+        cid = int(getattr(c, "id", 0) or 0)
+        return (ts, cid)
+
+    sorted_concepts = sorted(all_concepts, key=_concept_recency_key, reverse=True)
+    recent_terms: list[str] = []
+    for c in sorted_concepts:
+        t = _concept_term_only(c)
+        if t and t not in recent_terms:
+            recent_terms.append(t)
+        if len(recent_terms) >= 3:
+            break
 
     lines: list[str] = [
         "Hola, aquí está tu resumen de Nura para hoy.",

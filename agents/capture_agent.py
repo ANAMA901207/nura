@@ -67,11 +67,11 @@ def _normalize(text: str) -> str:
 
 # Palabras que por sí solas (input de 1 token) son conversacionales.
 _CHAT_SINGLE_WORDS = {
-    "hola", "hey", "buenas", "saludos",
+    "hola", "hi", "hey", "buenas", "saludos",
     "ok", "okay", "vale", "bien", "perfecto", "genial", "excelente",
     "si", "sip", "no", "nop",
     "gracias", "thanks", "thankyou",
-    "claro", "entendido", "listo", "de acuerdo",
+    "claro", "dale", "entendido", "listo", "de acuerdo",
     "ayuda", "help",
     "adios", "bye", "hasta luego", "chao",
 }
@@ -167,6 +167,92 @@ def _is_chat(text: str) -> bool:
             return True
 
     return False
+
+
+# ── Filtro anti-captura: charla / comandos mal parseados (bugfix Telegram/UI) ─
+
+def _token_looks_technical(token: str) -> bool:
+    """True si la palabra parece término técnico (lista conocida, dígitos, etc.)."""
+    t = _normalize(token).strip()
+    if not t:
+        return False
+    if t in _KNOWN_TECH_TOOLS:
+        return True
+    if any(ch.isdigit() for ch in t):
+        return True
+    if "_" in t or ("-" in t and len(t) > 1 and not t.startswith("-")):
+        return True
+    if len(t) >= 2 and t.isalpha() and t.isupper():
+        return True
+    return False
+
+
+def _is_conversational_chaff_for_capture(user_input: str) -> bool:
+    """
+    Input que no debe persistirse como concepto: saludo, comando roto, etc.
+
+    Se evalúa antes de spelling/ambigüedad para no gastar API en ruido.
+    """
+    raw = user_input.strip()
+    if not raw:
+        return True
+    if raw.startswith("/"):
+        return True
+    if raw[0].isdigit():
+        return True
+
+    norm = _normalize(raw)
+    words = [w for w in norm.split() if w]
+
+    if norm.startswith("quien ") or norm.startswith("quienes "):
+        if len(words) <= 5:
+            return True
+    if norm.startswith("y quien") or norm.startswith("y quienes"):
+        if len(words) <= 5:
+            return True
+    if norm.startswith("como la ") or norm.startswith("como el "):
+        if len(words) <= 5:
+            return True
+    if norm.startswith("para que ") or norm.startswith("para q "):
+        if len(words) <= 4:
+            return True
+
+    if len(words) < 3:
+        if any(_token_looks_technical(w) for w in words):
+            return False
+        if len(words) == 1 and len(words[0]) >= 6:
+            return False
+        if len(words) == 2 and max(len(w) for w in words) >= 8:
+            return False
+        return True
+
+    return False
+
+
+def _allow_new_capture_candidate(user_input: str) -> bool:
+    """
+    Solo capturar si hay señal de término (técnico o frase sustantiva).
+
+    Evita persistir frases conversacionales de 3+ palabras sin contenido técnico.
+    """
+    norm = _normalize(user_input)
+    words = [w for w in norm.split() if w]
+    if not words:
+        return False
+
+    tw = sum(1 for w in words if _token_looks_technical(w))
+    if tw >= 2:
+        return True
+    if tw >= 1:
+        return True
+    if len(words) == 1:
+        return len(words[0]) >= 6
+    if len(words) == 2:
+        return max(len(w) for w in words) >= 8
+
+    avg_len = sum(len(w) for w in words) / len(words)
+    max_len = max(len(w) for w in words)
+    return avg_len >= 5.0 or max_len >= 9
 
 
 # ── Detección de modo quiz ────────────────────────────────────────────────────
@@ -643,6 +729,16 @@ def capture_agent(state: NuraState) -> dict:
             "response": "",
         }
 
+    # Prioridad 3c: charla o comando mal parseado — no BD, modo chat (tutor canned/LLM)
+    if not bypass_checks and _is_conversational_chaff_for_capture(user_input):
+        return {
+            "mode": "chat",
+            "current_concept": None,
+            "quiz_questions": [],
+            "sources": [],
+            "response": "",
+        }
+
     # Prioridad 3b: web search solicitado → delegar a websearch_node en el grafo
     # El nodo websearch_node llama a web_search, guarda el concepto con los
     # snippets como contexto y cambia mode a 'capture' para que el pipeline
@@ -724,6 +820,16 @@ def capture_agent(state: NuraState) -> dict:
                 ),
                 "insight_message": "",
             }
+
+    # Prioridad 4c: frase sin señal de término — no persistir como concepto
+    if not bypass_checks and not _allow_new_capture_candidate(user_input):
+        return {
+            "mode": "chat",
+            "current_concept": None,
+            "quiz_questions": [],
+            "sources": [],
+            "response": "",
+        }
 
     # Prioridad 5: captura de término nuevo
     concept = save_concept(

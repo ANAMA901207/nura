@@ -1802,7 +1802,7 @@ def _render_view_dominar() -> None:
         for c in concepts:
             by_category[c.category or "Sin categoría"].append(c)
 
-        for cat, cat_concepts in sorted(by_category.items()):
+        for _cat_i, (cat, cat_concepts) in enumerate(sorted(by_category.items())):
             from ui.components import _category_color, render_concept_card
             color = _category_color(cat)
             # Sprint 21: cada categoría en un expander colapsado por defecto
@@ -1823,7 +1823,7 @@ def _render_view_dominar() -> None:
                 if cat_for_exam:
                     if st.button(
                         "📝 Hacer examen",
-                        key=f"dominar_exam_start_{_cat_key}",
+                        key=f"btn_examen_{_cat_i}_{_cat_key}",
                         use_container_width=False,
                     ):
                         _u = get_user_by_id(uid)
@@ -1871,11 +1871,13 @@ def _render_view_dominar() -> None:
 
                 for _ci, c in enumerate(cat_concepts):
                     try:
+                        # Índice único por categoría + posición (evita StreamlitDuplicateElementKey).
+                        _card_scope = _cat_i * 10_000 + _ci
                         render_concept_card(
                             c,
                             show_edit=False,
                             show_actions=True,
-                            card_index=_ci,
+                            card_index=_card_scope,
                         )
                     except Exception as _card_err:
                         st.warning(

@@ -100,6 +100,7 @@ def test_free_message_routes_to_tutor():
 
     with (
         patch("bot.handlers._get_linked_user", return_value=mock_user),
+        patch("bot.handlers.try_handle_exam_answer", return_value=None),
         patch("bot.nura_bridge.run_tutor", return_value=tutor_response),
     ):
         from bot.handlers import process_update
