@@ -34,7 +34,23 @@ import db.schema as _schema
 _schema.DB_PATH = Path(_tmp_db.name)
 
 from db.schema import init_db
+import pytest
 from db.operations import save_concept, update_concept_fields, get_all_concepts
+
+
+def _skip_on_gemini_error(result: dict) -> None:
+    r = (result.get("response") or "") + (result.get("insight_message") or "")
+    if any(
+        x in r
+        for x in (
+            "No puedo conectarme al servicio de IA",
+            "GOOGLE_API_KEY no está configurada",
+            "Nura no pudo clasificar este término",
+            "El servicio de IA está saturado",
+            "El servicio de IA no pudo responder",
+        )
+    ):
+        pytest.skip(f"Gemini no disponible en este entorno: {r[:140]!r}")
 
 # Estado base vacío para invocar el grafo
 _BASE_STATE = {
@@ -100,6 +116,7 @@ def test_question_gets_real_tutor_response() -> None:
     graph = build_graph()
 
     result = graph.invoke(_state(user_input="que es la tasa de interes?"))
+    _skip_on_gemini_error(result)
 
     assert result.get("mode") == "question", (
         f"Se esperaba mode='question', se obtuvo '{result.get('mode')}'"
@@ -132,6 +149,7 @@ def test_tutor_uses_bd_context() -> None:
 
     # "como" está en _QUESTION_STARTERS → activa mode='question'
     result = graph.invoke(_state(user_input="como funciona la amortizacion?"))
+    _skip_on_gemini_error(result)
 
     response = result.get("response", "")
     assert len(response) >= 50, (

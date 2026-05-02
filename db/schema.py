@@ -552,6 +552,15 @@ def _init_db_sqlite() -> None:
                 created_at       TEXT    NOT NULL DEFAULT (datetime('now')),
                 FOREIGN KEY (user_id) REFERENCES users(id)
             );
+
+            CREATE TABLE IF NOT EXISTS conversation_history (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id     INTEGER NOT NULL,
+                role        TEXT    NOT NULL,
+                content     TEXT    NOT NULL,
+                created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            );
         """)
 
 
@@ -670,6 +679,19 @@ def _init_db_postgresql() -> None:
                     created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
             """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS conversation_history (
+                    id          SERIAL PRIMARY KEY,
+                    user_id     INTEGER NOT NULL REFERENCES users(id),
+                    role        TEXT    NOT NULL,
+                    content     TEXT    NOT NULL,
+                    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_conversation_history_user_created "
+                "ON conversation_history(user_id, created_at)"
+            )
             # Índices de rendimiento
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_concepts_user_id ON concepts(user_id)"
@@ -797,6 +819,19 @@ def _run_migrations_postgresql() -> None:
                     created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
             """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS conversation_history (
+                    id          SERIAL PRIMARY KEY,
+                    user_id     INTEGER NOT NULL REFERENCES users(id),
+                    role        TEXT    NOT NULL,
+                    content     TEXT    NOT NULL,
+                    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_conversation_history_user_created "
+                "ON conversation_history(user_id, created_at)"
+            )
         raw.commit()
     finally:
         raw.close()
@@ -929,6 +964,20 @@ def _run_migrations_sqlite() -> None:
                 FOREIGN KEY (user_id) REFERENCES users(id)
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS conversation_history (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id     INTEGER NOT NULL,
+                role        TEXT    NOT NULL,
+                content     TEXT    NOT NULL,
+                created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_conversation_history_user_created "
+            "ON conversation_history(user_id, created_at)"
+        )
 
         # ── Sprint 11: índices de rendimiento ────────────────────────────────
         conn.execute(

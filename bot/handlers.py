@@ -516,8 +516,32 @@ async def handle_capturar(telegram_id: int | str, texto: str) -> str:
         return "¿Qué término quieres capturar? Usa: `/capturar [término]`"
 
     from bot.nura_bridge import run_tutor
+    from db.operations import (
+        _sanitize_text,
+        get_concept_by_term,
+        get_concept_connections_detail,
+    )
+
     respuesta = await asyncio.to_thread(run_tutor, user.id, texto)
-    return f"✅ Concepto capturado:\n\n{respuesta}"
+    lines = [f"✅ Concepto capturado:\n\n{respuesta}"]
+    term_key = _sanitize_text(texto.strip(), 500)
+    if (
+        term_key
+        and "Nura no pudo clasificar" not in respuesta
+        and "Error al contactar al tutor" not in respuesta
+    ):
+        concept = get_concept_by_term(term_key, user.id)
+        if concept is not None:
+            details = get_concept_connections_detail(concept.id, user.id)
+            if details:
+                other = details[0].get("concept")
+                oterm = getattr(other, "term", "") if other is not None else ""
+                if oterm:
+                    lines.append(
+                        f"\n\n¡Buena captura! *{concept.term}* se conecta con "
+                        f"*{oterm}* que ya tienes 🔥"
+                    )
+    return "".join(lines)
 
 
 def handle_repasar(telegram_id: int | str) -> str:
@@ -815,9 +839,13 @@ async def handle_free_message(telegram_id: int | str, texto: str) -> str:
         return _msg_no_vinculado()
 
     if _is_short_greeting(texto):
-        uname = getattr(user, "username", "") or "explorador"
+        from db.operations import get_concepts_due_today
+
+        uname = (getattr(user, "username", "") or "explorador").strip()
+        pendientes = len(get_concepts_due_today(user.id))
         return (
-            f"¡Hola, *{uname}*! 👋 Soy Nura. ¿Qué querés aprender o repasar hoy?"
+            f"¡Hola *{uname}*! Tienes *{pendientes}* conceptos pendientes de repasar "
+            f"hoy 🔥 ¿Arrancamos?"
         )
 
     from bot.nura_bridge import run_tutor

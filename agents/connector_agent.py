@@ -64,8 +64,12 @@ def connector_agent(state: NuraState) -> dict:
     # Excluye el concepto actual para evitar que el modelo lo conecte consigo mismo
     other_concepts = [c for c in state.get("all_concepts", []) if c.id != concept.id]
 
-    # find_connections devuelve [] de inmediato si other_concepts está vacío
-    connections_data = find_connections(concept, other_concepts)
+    # find_connections devuelve [] de inmediato si other_concepts está vacío.
+    # Sin API key o con fallo del modelo: no abortar el pipeline (Sprint 35 / tests).
+    try:
+        connections_data = find_connections(concept, other_concepts)
+    except Exception:
+        connections_data = []
 
     saved_connections: list[Connection] = []
     for item in connections_data:

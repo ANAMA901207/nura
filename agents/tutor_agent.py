@@ -83,6 +83,42 @@ GEMINI_MODEL: str = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
 # Máximo de vueltas tutor→tools→tutor (Sprint 33); salida clara si se agota.
 MAX_TUTOR_TOOL_ROUNDS: int = 8
 
+# Sprint 35: mensajes recientes (user+nura) a incluir en el prompt (~5 intercambios).
+TUTOR_HISTORY_MESSAGE_LIMIT: int = 10
+
+
+def _persist_conversation_turn(user_id: int, user_msg: str, nura_msg: str) -> None:
+    """Guarda turno user+nura en conversation_history (errores silenciados)."""
+    try:
+        from db.operations import save_conversation
+
+        save_conversation(user_id, "user", user_msg)
+        save_conversation(user_id, "nura", nura_msg)
+    except Exception:
+        pass
+
+
+def _conversation_context_block(user_id: int) -> str:
+    """Texto con turnos recientes para anteponer al mensaje humano del tutor."""
+    try:
+        from db.operations import get_recent_conversation
+
+        recent = get_recent_conversation(user_id, limit=TUTOR_HISTORY_MESSAGE_LIMIT)
+    except Exception:
+        return ""
+    if not recent:
+        return ""
+    lines: list[str] = []
+    for m in recent:
+        role = (m.get("role") or "").strip()
+        lab = "Usuario" if role == "user" else "Nura"
+        c = (m.get("content") or "").strip()
+        if c:
+            lines.append(f"{lab}: {c}")
+    if not lines:
+        return ""
+    return "Memoria reciente (últimos turnos):\n" + "\n".join(lines) + "\n\n"
+
 # ── Prompts ────────────────────────────────────────────────────────────────────
 
 CLASSIFY_SYSTEM_PROMPT = (
@@ -95,13 +131,22 @@ CLASSIFY_SYSTEM_PROMPT = (
 )
 
 TUTOR_SYSTEM_PROMPT = (
-    "Eres Nura, tutor adaptativo de aprendizaje amigable y cercano. "
-    "El usuario esta aprendiendo IA y tecnologia. "
-    "Tienes acceso a su base de conocimiento personal y a resultados de busqueda web "
-    "cuando es necesario. "
-    "Responde de forma conversacional, maximo 3 parrafos, con ejemplos practicos. "
-    "Si usaste web search, al final lista brevemente las fuentes consultadas "
-    "con su titulo y URL."
+    "Eres Nura, tutora de aprendizaje adaptativo. Tu personalidad:\n"
+    "- Directa y curiosa — vas al grano pero haces preguntas\n"
+    "- Conectas siempre lo nuevo con lo que el usuario ya sabe\n"
+    "- Cálida con humor ocasional — celebras, retas cariñosamente\n"
+    "- Respondes en el idioma del usuario\n"
+    "- Máximo 200 palabras por respuesta salvo que pidan más\n"
+    "- SIEMPRE terminas con una pregunta para enganchar\n\n"
+    "Formato obligatorio de cada respuesta:\n"
+    "[Explicación en máx 3 párrafos cortos]\n\n"
+    "📍 Dónde encaja: [Categoría] → [Subcategoría] → [Concepto]\n"
+    "🗂 En esta categoría también tienes: [lista de conceptos del usuario en esa categoría]\n"
+    "❓ [Una pregunta relevante]\n\n"
+    "Si no hay conceptos relacionados en el mapa del usuario, "
+    "omite la sección 🗂 pero siempre incluye 📍 y ❓.\n\n"
+    "Si usaste búsqueda web, después del bloque anterior añade una línea breve "
+    "con las fuentes (título y URL)."
 )
 
 # ── Respuestas conversacionales sin LLM (modo 'chat') ─────────────────────────
@@ -694,15 +739,7 @@ def _build_tutor_system_prompt(user_profile: dict) -> str:
     else:
         context_line = "El usuario está aprendiendo temas de su área profesional."
 
-    base = (
-        "Eres Nura, tutor adaptativo de aprendizaje amigable y cercano. "
-        f"{context_line} "
-        "Tienes acceso a su base de conocimiento personal y a resultados de búsqueda web "
-        "cuando es necesario. "
-        "Responde de forma conversacional, máximo 3 párrafos, con ejemplos prácticos. "
-        "Si usaste web search, al final lista brevemente las fuentes consultadas "
-        "con su título y URL."
-    )
+    base = TUTOR_SYSTEM_PROMPT.rstrip() + "\n\n" + context_line
 
     if not (profession or learning_area or tech_level_raw):
         return base
@@ -798,7 +835,7 @@ def tutor_agent(state: NuraState) -> dict:
     4. Llama a Gemini con TUTOR_SYSTEM_PROMPT y el contexto completo.
     5. Devuelve response y sources en el estado.
 
-    El tutor NO persiste nada en la BD — es un nodo de solo lectura.
+    Sprint 35: persiste el turno en ``conversation_history`` y lee memoria reciente.
 
     Parametros
     ----------
@@ -819,11 +856,13 @@ def tutor_agent(state: NuraState) -> dict:
     if state.get("mode") == "chat":
         user_input = state.get("user_input", "").strip()
         out = _chat_response(user_input)
+        uid_chat = int(state.get("user_id", 1))
         try:
             from db.operations import save_last_tutor_response
-            save_last_tutor_response(state.get("user_id", 1), out)
+            save_last_tutor_response(uid_chat, out)
         except Exception:
             pass
+        _persist_conversation_turn(uid_chat, user_input, out)
         return {
             "response": out,
             "sources": [],
@@ -847,6 +886,7 @@ def tutor_agent(state: NuraState) -> dict:
     # Sprint 15: construir system prompt adaptado al perfil del usuario.
     user_profile: dict = state.get("user_profile") or {}
     tutor_sys_prompt = _build_tutor_system_prompt(user_profile)
+    conv_block = _conversation_context_block(user_id)
 
     try:
         llm = ChatGoogleGenerativeAI(
@@ -890,6 +930,8 @@ def tutor_agent(state: NuraState) -> dict:
 
         # ── Paso 4: construir el mensaje completo ─────────────────────────────
         human_parts: list[str] = []
+        if conv_block:
+            human_parts.append(conv_block)
         if similar_ctx:
             human_parts.append(similar_ctx)
             human_parts.append("")
@@ -1015,6 +1057,8 @@ def tutor_agent(state: NuraState) -> dict:
             save_last_tutor_response(user_id, tutor_response)
         except Exception:
             pass
+
+        _persist_conversation_turn(user_id, question, tutor_response)
 
         return {
             "response":           tutor_response,

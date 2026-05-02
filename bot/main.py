@@ -135,7 +135,10 @@ async def _register_webhook() -> None:
 
 @asynccontextmanager
 async def _lifespan(application: FastAPI):
-    """Gestiona el ciclo de vida de la app: registra webhook y lanza scheduler."""
+    """Gestiona el ciclo de vida de la app: BD, webhook y scheduler."""
+    from db.schema import init_db
+
+    init_db()
     await _register_webhook()
     asyncio.create_task(run_scheduler())
     yield

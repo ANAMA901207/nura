@@ -1819,6 +1819,75 @@ def get_last_tutor_response(user_id: int) -> "str | None":
     return str(val)
 
 
+# ── Sprint 35: memoria conversacional (tutor / Telegram / app) ───────────────
+
+_CONVERSATION_MSG_MAX_LEN = 12000
+_CONVERSATION_ALLOWED_ROLES = frozenset({"user", "nura"})
+
+
+def save_conversation(user_id: int, role: str, content: str) -> None:
+    """
+    Persiste un turno de la conversación entre el usuario y Nura.
+
+    Parámetros
+    ----------
+    user_id : Propietario del mensaje.
+    role    : ``user`` o ``nura``.
+    content : Texto del mensaje (se trunca de forma segura).
+    """
+    role_n = (role or "").strip().lower()
+    if role_n not in _CONVERSATION_ALLOWED_ROLES:
+        raise ValueError("role debe ser 'user' o 'nura'.")
+    text = _sanitize_text(content or "", _CONVERSATION_MSG_MAX_LEN)
+    if not text.strip():
+        return
+    created = datetime.now().isoformat()
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO conversation_history (user_id, role, content, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (user_id, role_n, text, created),
+        )
+
+
+def get_recent_conversation(user_id: int, limit: int = 5) -> list[dict]:
+    """
+    Devuelve los últimos ``limit`` mensajes del usuario, del más antiguo al más reciente.
+
+    Parámetros
+    ----------
+    user_id : Propietario.
+    limit   : Máximo de filas a recuperar (por defecto 5).
+
+    Devuelve
+    --------
+    Lista de dicts con keys ``role``, ``content``, ``created_at`` (ISO o str).
+    """
+    lim = max(1, min(int(limit), 200))
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT role, content, created_at
+            FROM   conversation_history
+            WHERE  user_id = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            """,
+            (user_id, lim),
+        ).fetchall()
+    out: list[dict] = []
+    for row in reversed(rows):
+        ca = row["created_at"] if hasattr(row, "keys") else row[2]
+        out.append({
+            "role":       row["role"] if hasattr(row, "keys") else row[0],
+            "content":    row["content"] if hasattr(row, "keys") else row[1],
+            "created_at": ca.isoformat() if hasattr(ca, "isoformat") else str(ca),
+        })
+    return out
+
+
 # ── Sprint 28: árbol jerárquico conceptual ────────────────────────────────────
 
 def save_hierarchy(

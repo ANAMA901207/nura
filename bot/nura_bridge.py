@@ -221,8 +221,12 @@ def run_tutor(user_id: int, mensaje: str) -> str:
     --------
     str — respuesta del tutor.  En caso de error, mensaje amigable.
     """
+    from db.schema import init_db
     from db.operations import get_user_by_id
     from agents.graph import build_graph
+
+    # El bot FastAPI no pasa por Streamlit: asegurar esquema/migraciones antes de tocar la BD.
+    init_db()
 
     # Cargar perfil del usuario para contextualizar el tutor
     user = get_user_by_id(user_id)
@@ -250,8 +254,11 @@ def run_review(user_id: int) -> str:
 
     Usa un disparador reconocido por capture_agent como mode='review'.
     """
+    from db.schema import init_db
     from db.operations import get_user_by_id
     from agents.graph import build_graph
+
+    init_db()
 
     user = get_user_by_id(user_id)
     user_profile: dict = {}
