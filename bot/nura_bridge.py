@@ -39,6 +39,8 @@ _ROOT = Path(__file__).parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+from agents.message_content import message_content_to_str
+
 
 # ── Vinculación de usuarios ────────────────────────────────────────────────────
 
@@ -152,25 +154,53 @@ def _coerce_graph_text(result: object) -> str:
     """
     Obtiene texto legible del retorno de graph.invoke().
 
-    Algunos caminos (p. ej. envoltorios LangChain) exponen el mensaje en
-    ``output`` en lugar de ``response``.
+    Además del estado Nura (``response`` / ``output``), admite:
+    - ``AIMessage`` u otro ``BaseMessage`` con ``.content``
+    - lista de mensajes (se toma el último elemento)
+    - dict serializado tipo LangChain: ``{'type': 'text', 'text': '...'}``
     """
     if result is None:
         return "Sin respuesta."
+
+    if isinstance(result, list):
+        if not result:
+            return "Sin respuesta."
+        return _coerce_graph_text(result[-1])
+
+    try:
+        from langchain_core.messages import BaseMessage
+    except ImportError:  # pragma: no cover
+        BaseMessage = type(None)  # isinstance real nunca coincide salvo None
+
+    if isinstance(result, BaseMessage) and result is not None:
+        txt = message_content_to_str(result.content)
+        return txt if txt else "Sin respuesta."
+
+    # Objetos tipo mensaje sin importar langchain_core (duck typing)
+    if not isinstance(result, (str, bytes, dict)) and hasattr(result, "content"):
+        txt = message_content_to_str(getattr(result, "content", None))
+        if txt:
+            return txt
+
     if isinstance(result, str):
         s = result.strip()
         return s if s else "Sin respuesta."
-    if not isinstance(result, dict):
-        return str(result)
-    for key in ("response", "output", "message"):
-        val = result.get(key)
-        if isinstance(val, str) and val.strip():
-            return val.strip()
-        if isinstance(val, dict):
+
+    if isinstance(result, dict):
+        if result.get("type") == "text":
+            t = message_content_to_str(result)
+            if t:
+                return t
+        for key in ("response", "output", "message"):
+            val = result.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
             nested = _coerce_graph_text(val)
             if nested and nested != "Sin respuesta.":
                 return nested
-    return "Sin respuesta."
+        return "Sin respuesta."
+
+    return str(result).strip() if str(result).strip() else "Sin respuesta."
 
 
 # ── Tutor ─────────────────────────────────────────────────────────────────────

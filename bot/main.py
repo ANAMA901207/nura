@@ -67,9 +67,17 @@ def _extract_sendable_text(result: dict) -> str:
     Obtiene el cuerpo de texto plano para sendMessage.
 
     ``process_update`` suele poner un str en ``text``, pero en algunos caminos
-    el valor puede venir anidado como dict (p. ej. ``{'type': 'text', 'text': '…'}``).
+    el valor puede ser un dict tipo LangChain, un ``AIMessage``, o una lista
+    de mensajes; se reutiliza ``_coerce_graph_text`` del bridge.
     """
+    from bot.nura_bridge import _coerce_graph_text
+
     t: object = result.get("text", "")
+    if not isinstance(t, str):
+        coerced = _coerce_graph_text(t)
+        if coerced and coerced != "Sin respuesta.":
+            return coerced
+        t = ""
     for _ in range(5):
         if isinstance(t, str):
             return t

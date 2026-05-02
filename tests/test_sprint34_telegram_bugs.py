@@ -55,6 +55,47 @@ def test_coerce_graph_text_prefers_response_over_output():
     assert _coerce_graph_text({"response": "A", "output": "B"}) == "A"
 
 
+def test_coerce_graph_text_langchain_text_dict():
+    from bot.nura_bridge import _coerce_graph_text
+
+    assert _coerce_graph_text({"type": "text", "text": "Hola"}) == "Hola"
+
+
+def test_coerce_graph_text_ai_message():
+    from langchain_core.messages import AIMessage
+
+    from bot.nura_bridge import _coerce_graph_text
+
+    assert _coerce_graph_text(AIMessage(content="Hola")) == "Hola"
+
+
+def test_coerce_graph_text_ai_message_multipart_content():
+    from langchain_core.messages import AIMessage
+
+    from bot.nura_bridge import _coerce_graph_text
+
+    msg = AIMessage(content=[{"type": "text", "text": "Hola"}, {"type": "text", "text": " mundo"}])
+    assert _coerce_graph_text(msg) == "Hola mundo"
+
+
+def test_coerce_graph_text_message_list_last_wins():
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    from bot.nura_bridge import _coerce_graph_text
+
+    out = _coerce_graph_text(
+        [HumanMessage(content="ping"), AIMessage(content="pong")]
+    )
+    assert out == "pong"
+
+
+def test_extract_sendable_text_coerces_langchain_dict():
+    from bot.main import _extract_sendable_text
+
+    payload = {"chat_id": 1, "text": {"type": "text", "text": "Hola"}, "handled": True}
+    assert _extract_sendable_text(payload) == "Hola"
+
+
 # ── BUG-02: /examen args + errores ───────────────────────────────────────────
 
 

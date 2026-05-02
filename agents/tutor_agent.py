@@ -61,6 +61,7 @@ from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from db.operations import get_all_concepts
 from tools.search_tool import web_search
 from agents.gemini_llm import GEMINI_REQUEST_TIMEOUT_SEC
+from agents.message_content import message_content_to_str
 from agents.state import NuraState
 
 # Sprint 19: lista completa de tools Nura (ToolNode en graph, introspección en tests).
@@ -560,22 +561,10 @@ def _call_gemini(llm: "ChatGoogleGenerativeAI", messages: list, retries: int = 3
     for attempt in range(retries):
         try:
             response = llm.invoke(messages)
-            content = response.content
-            # content puede ser str, list de content-blocks, u otro objeto
-            if isinstance(content, str):
-                return content.strip()
-            if isinstance(content, list):
-                # Extraer texto de todos los bloques con clave 'text' o 'content'
-                parts: list[str] = []
-                for block in content:
-                    if isinstance(block, str) and block:
-                        parts.append(block)
-                    elif isinstance(block, dict):
-                        text = block.get("text") or block.get("content", "")
-                        if text:
-                            parts.append(str(text))
-                return " ".join(parts).strip()
-            return str(content).strip()
+            extracted = message_content_to_str(response.content)
+            if extracted:
+                return extracted
+            return ""
         except Exception as exc:
             if _is_auth_error(exc):
                 # Error de autenticacion: no tiene sentido reintentar
@@ -933,7 +922,9 @@ def tutor_agent(state: NuraState) -> dict:
                 ai_msg = bound.invoke(messages_lc)
                 tcalls = _normalize_tool_calls_for_tutor(ai_msg)
                 if not tcalls:
-                    tutor_response = (str(ai_msg.content) or "").strip()
+                    tutor_response = message_content_to_str(
+                        getattr(ai_msg, "content", None)
+                    )
                     break
                 messages_lc.append(ai_msg)
                 for tc in tcalls:
