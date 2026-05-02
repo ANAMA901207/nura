@@ -21,6 +21,27 @@ import asyncio
 from typing import Any
 
 
+def _args_after_command(full_text: str, command: str) -> str:
+    """
+    Extrae los argumentos tras ``/comando`` o ``/comando@BotName``.
+
+    Telegram envía ``/examen@mi_bot categoría`` en grupos y a veces en privado;
+    un simple ``text[len('/examen'):]`` dejaría ``@mi_bot categoría`` y rompe
+    el matching de categoría.
+    """
+    t = (full_text or "").strip()
+    if not t:
+        return ""
+    parts = t.split(maxsplit=1)
+    head = parts[0]
+    low_cmd = command.lower()
+    if not head.lower().startswith(low_cmd):
+        return ""
+    if "@" in head:
+        return parts[1].strip() if len(parts) > 1 else ""
+    return parts[1].strip() if len(parts) > 1 else ""
+
+
 # ── Sprint 30: examen por Telegram ───────────────────────────────────────────
 
 
@@ -138,89 +159,103 @@ def try_handle_exam_answer(user_id: int, text: str) -> str | None:
 async def handle_examen_command(
     _telegram_id: int | str,
     user_id: int,
-    category_arg: str,
+    category_arg: str | None,
 ) -> str:
     """Lista categorías o inicia examen y devuelve la primera pregunta."""
-    from agents.exam_agent import generate_exam
-    from db.operations import get_all_concepts, get_user_by_id, replace_exam_session
+    import traceback
 
-    cats = _user_exam_categories(user_id)
-    if not category_arg.strip():
-        if not cats:
-            return (
-                "No tenés categorías con conceptos clasificados para examen.\n"
-                "Capturá y clasificá conceptos en la app primero."
-            )
-        body = (
-            "Podés rendir un examen por categoría. Usá:\n`/examen [categoría]`\n\n"
-            "*Categorías disponibles:*\n"
-        )
-        body += "\n".join(f"• `{c}`" for c in cats)
-        return body
-
-    resolved = _match_category(cats, category_arg)
-    if resolved is None:
-        return (
-            f"No reconozco la categoría «{category_arg.strip()}».\n"
-            "Escribí `/examen` para ver la lista."
-        )
-
-    concepts_objs = [
-        c
-        for c in get_all_concepts(user_id=user_id)
-        if (c.category or "Sin categoría") == resolved
-        and getattr(c, "is_classified", False)
-        and c.flashcard_front
-    ]
-    if not concepts_objs:
-        return f"No hay conceptos listos en «{resolved}» para armar el examen."
-
-    concepts_payload = [
-        {
-            "term":        c.term,
-            "explanation": c.explanation or "",
-            "category":    c.category or "",
-        }
-        for c in concepts_objs
-    ]
-    user = get_user_by_id(user_id)
-    profile: dict = {}
-    if user is not None:
-        profile = {
-            "profession":    getattr(user, "profession", "") or "",
-            "learning_area": getattr(user, "learning_area", "") or "",
-            "tech_level":    getattr(user, "tech_level", "") or "",
-        }
+    categoria = (category_arg or "").strip()
 
     try:
-        questions = await asyncio.to_thread(
-            generate_exam,
-            resolved,
-            concepts_payload,
-            profile,
+        from agents.exam_agent import generate_exam
+        from db.operations import get_all_concepts, get_user_by_id, replace_exam_session
+
+        cats = _user_exam_categories(user_id)
+        if not categoria:
+            if not cats:
+                return (
+                    "No tenés categorías con conceptos clasificados para examen.\n"
+                    "Capturá y clasificá conceptos en la app primero."
+                )
+            body = (
+                "Podés rendir un examen por categoría. Usá:\n`/examen [categoría]`\n\n"
+                "*Categorías disponibles:*\n"
+            )
+            body += "\n".join(f"• `{c}`" for c in cats)
+            return body
+
+        resolved = _match_category(cats, categoria)
+        if resolved is None:
+            return (
+                f"No reconozco la categoría «{categoria}».\n"
+                "Escribí `/examen` para ver la lista."
+            )
+
+        concepts_objs = [
+            c
+            for c in get_all_concepts(user_id=user_id)
+            if (c.category or "Sin categoría") == resolved
+            and getattr(c, "is_classified", False)
+            and c.flashcard_front
+        ]
+        if not concepts_objs:
+            return f"No hay conceptos listos en «{resolved}» para armar el examen."
+
+        concepts_payload = [
+            {
+                "term":        c.term,
+                "explanation": c.explanation or "",
+                "category":    c.category or "",
+            }
+            for c in concepts_objs
+        ]
+        user = get_user_by_id(user_id)
+        profile: dict = {}
+        if user is not None:
+            profile = {
+                "profession":    getattr(user, "profession", "") or "",
+                "learning_area": getattr(user, "learning_area", "") or "",
+                "tech_level":    getattr(user, "tech_level", "") or "",
+            }
+
+        try:
+            questions = await asyncio.to_thread(
+                generate_exam,
+                resolved,
+                concepts_payload,
+                profile,
+            )
+        except Exception as exc:
+            print(
+                f"[NuraBot] /examen generate_exam falló — "
+                f"{type(exc).__name__}: {exc}"
+            )
+            traceback.print_exc()
+            return (
+                "No pude generar el examen ahora (error al llamar al modelo). "
+                "Revisá tu clave de API y probá más tarde. "
+                f"Detalle técnico: {type(exc).__name__}"
+            )
+
+        if not questions:
+            return "No pude generar el examen ahora. Probá de nuevo más tarde."
+
+        replace_exam_session(user_id, resolved, questions)
+        intro = (
+            f"📝 *Examen: {resolved}*\n"
+            "10 preguntas. Aprobación: *80%* o más.\n\n"
         )
+        return intro + _format_telegram_question(questions[0], 0)
     except Exception as exc:
-        import traceback
         print(
-            f"[NuraBot] /examen generate_exam falló — "
-            f"{type(exc).__name__}: {exc}"
+            f"[NuraBot] /examen falló — {type(exc).__name__}: {exc}"
         )
         traceback.print_exc()
         return (
-            "No pude generar el examen ahora (error al llamar al modelo). "
-            "Revisá tu clave de API y probá más tarde. "
-            f"Detalle técnico: {type(exc).__name__}"
+            "No pude procesar el comando de examen. "
+            "Probá de nuevo en unos minutos o escribí `/examen` para ver las categorías. "
+            f"({type(exc).__name__})"
         )
-
-    if not questions:
-        return "No pude generar el examen ahora. Probá de nuevo más tarde."
-
-    replace_exam_session(user_id, resolved, questions)
-    intro = (
-        f"📝 *Examen: {resolved}*\n"
-        "10 preguntas. Aprobación: *80%* o más.\n\n"
-    )
-    return intro + _format_telegram_question(questions[0], 0)
 
 
 # ── Router principal (async) ──────────────────────────────────────────────────
@@ -306,7 +341,7 @@ async def process_update(update: dict) -> dict:
         if user is None:
             response = _msg_no_vinculado()
         else:
-            cat_arg = text[len("/examen"):].strip()
+            cat_arg = _args_after_command(text, "/examen")
             response = await handle_examen_command(telegram_id, user.id, cat_arg)
 
     elif text.startswith("/brechas"):
@@ -487,25 +522,17 @@ async def handle_capturar(telegram_id: int | str, texto: str) -> str:
 
 def handle_repasar(telegram_id: int | str) -> str:
     """
-    Muestra los conceptos pendientes de repaso según SM-2.
+    Inicia el flujo de repaso vía review_agent (grafo), mismo criterio SM-2 que la app.
 
-    Si no hay pendientes, lo indica.
+    No redirige a la web: el mensaje se arma en Telegram.
     """
     user = _get_linked_user(telegram_id)
     if user is None:
         return _msg_no_vinculado()
 
-    from bot.nura_bridge import get_pending_concepts
-    conceptos = get_pending_concepts(user.id)
+    from bot.nura_bridge import run_review
 
-    if not conceptos:
-        return "🎉 ¡No tienes conceptos pendientes para hoy! Vuelve mañana."
-
-    lineas = [f"📚 *{c.term}* — nivel {c.mastery_level}/5" for c in conceptos[:10]]
-    respuesta = "\n".join(lineas)
-    if len(conceptos) > 10:
-        respuesta += f"\n…y {len(conceptos) - 10} más."
-    return f"Tienes *{len(conceptos)}* concepto(s) para repasar hoy:\n\n{respuesta}"
+    return run_review(user.id)
 
 
 def handle_streak(telegram_id: int | str) -> str:

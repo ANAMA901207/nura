@@ -119,6 +119,60 @@ def get_pending_concepts(user_id: int) -> list["Concept"]:
     return get_concepts_due_today(user_id=user_id)
 
 
+# ── Estado inicial del grafo (alineado con ui/app._empty_state) ───────────────
+
+def _initial_graph_state(
+    user_id: int,
+    user_input: str,
+    user_profile: dict | None = None,
+    mode: str = "",
+) -> dict:
+    """Construye el dict inicial para graph.invoke() sin depender de Streamlit."""
+    return {
+        "user_input":            user_input,
+        "user_context":          "",
+        "current_concept":       None,
+        "all_concepts":          [],
+        "new_connections":       [],
+        "response":              "",
+        "mode":                  mode,
+        "user_id":               user_id,
+        "quiz_questions":        [],
+        "sources":               [],
+        "insight_message":       "",
+        "clarification_options": [],
+        "spelling_suggestion":   "",
+        "user_profile":          user_profile or {},
+        "diagram_svg":           "",
+        "suggested_concepts":    [],
+    }
+
+
+def _coerce_graph_text(result: object) -> str:
+    """
+    Obtiene texto legible del retorno de graph.invoke().
+
+    Algunos caminos (p. ej. envoltorios LangChain) exponen el mensaje en
+    ``output`` en lugar de ``response``.
+    """
+    if result is None:
+        return "Sin respuesta."
+    if isinstance(result, str):
+        s = result.strip()
+        return s if s else "Sin respuesta."
+    if not isinstance(result, dict):
+        return str(result)
+    for key in ("response", "output", "message"):
+        val = result.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+        if isinstance(val, dict):
+            nested = _coerce_graph_text(val)
+            if nested and nested != "Sin respuesta.":
+                return nested
+    return "Sin respuesta."
+
+
 # ── Tutor ─────────────────────────────────────────────────────────────────────
 
 def run_tutor(user_id: int, mensaje: str) -> str:
@@ -152,14 +206,42 @@ def run_tutor(user_id: int, mensaje: str) -> str:
 
     try:
         graph = build_graph()
-        result = graph.invoke({
-            "user_input":   mensaje,
-            "user_id":      user_id,
-            "user_profile": user_profile,
-            "mode":         "",
-            "history":      [],
-            "response":     "",
-        })
-        return result.get("response") or result.get("message", "Sin respuesta.")
+        raw = graph.invoke(
+            _initial_graph_state(user_id, mensaje, user_profile, mode="")
+        )
+        return _coerce_graph_text(raw)
     except Exception as exc:
         return f"Error al contactar al tutor: {exc!s:.200}"
+
+
+def run_review(user_id: int) -> str:
+    """
+    Invoca el grafo en modo repaso (review_agent) y devuelve solo texto.
+
+    Usa un disparador reconocido por capture_agent como mode='review'.
+    """
+    from db.operations import get_user_by_id
+    from agents.graph import build_graph
+
+    user = get_user_by_id(user_id)
+    user_profile: dict = {}
+    if user:
+        user_profile = {
+            "profession":    getattr(user, "profession",    ""),
+            "learning_area": getattr(user, "learning_area", ""),
+            "tech_level":    getattr(user, "tech_level",    ""),
+        }
+
+    try:
+        graph = build_graph()
+        raw = graph.invoke(
+            _initial_graph_state(
+                user_id,
+                "qué debo repasar hoy",
+                user_profile,
+                mode="",
+            )
+        )
+        return _coerce_graph_text(raw)
+    except Exception as exc:
+        return f"Error al generar el repaso: {exc!s:.200}"

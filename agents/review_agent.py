@@ -96,8 +96,8 @@ def review_agent(state: NuraState) -> dict:
         lines.append(f"_(y {total - MAX_REVIEW_CONCEPTS} más)_\n")
 
     lines.append(
-        "Abre el tab Aprendizaje y pulsa '▶️ Repasar ahora' "
-        "para iniciar la sesión de flashcards de hoy."
+        "Podés profundizar preguntándome por aquí sobre cualquier término de la lista, "
+        "o practicar con las flashcards cuando uses la app."
     )
 
     return {

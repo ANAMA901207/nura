@@ -74,7 +74,7 @@ def _extract_sendable_text(result: dict) -> str:
         if isinstance(t, str):
             return t
         if isinstance(t, dict):
-            t = t.get("text", t.get("body", t.get("message", "")))
+            t = t.get("text", t.get("body", t.get("message", t.get("output", ""))))
             continue
         if t is None:
             return ""
