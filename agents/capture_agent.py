@@ -222,7 +222,9 @@ def _is_conversational_chaff_for_capture(user_input: str) -> bool:
             return False
         if len(words) == 1 and len(words[0]) >= 6:
             return False
-        if len(words) == 2 and max(len(w) for w in words) >= 8:
+        # Dos palabras: al menos un token sustantivo largo (p. ej. "agentic chat").
+        # Umbral 7: "agentic" (7) califica; "buenos dias" (6+4) sigue siendo charla.
+        if len(words) == 2 and max(len(w) for w in words) >= 7:
             return False
         return True
 
@@ -248,7 +250,7 @@ def _allow_new_capture_candidate(user_input: str) -> bool:
     if len(words) == 1:
         return len(words[0]) >= 6
     if len(words) == 2:
-        return max(len(w) for w in words) >= 8
+        return max(len(w) for w in words) >= 7
 
     avg_len = sum(len(w) for w in words) / len(words)
     max_len = max(len(w) for w in words)

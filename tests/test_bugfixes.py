@@ -352,6 +352,75 @@ class TestBug3ReclassifyClassified:
         )
 
 
+# ── Dos palabras sustantivas (p. ej. "agentic chat") ─────────────────────────
+
+class TestCaptureAgenticChatTwoWords:
+    """
+    Regresión: términos de 2 palabras con un token largo (≥7 letras) como
+    ``agentic`` no deben bloquearse como charla ni rechazarse en
+    ``_allow_new_capture_candidate``.
+    """
+
+    @staticmethod
+    def _base_state(user_input: str) -> dict:
+        return {
+            "user_input": user_input,
+            "user_context": "",
+            "user_id": 1,
+            "current_concept": None,
+            "all_concepts": [],
+            "new_connections": [],
+            "response": "",
+            "mode": "",
+            "quiz_questions": [],
+            "sources": [],
+        }
+
+    def test_agentic_chat_passes_chaff_and_allow_filters(self):
+        from agents.capture_agent import (
+            _allow_new_capture_candidate,
+            _is_conversational_chaff_for_capture,
+        )
+
+        assert not _is_conversational_chaff_for_capture("agentic chat")
+        assert _allow_new_capture_candidate("agentic chat")
+
+    def test_agentic_chat_capture_agent_returns_capture(self):
+        from unittest.mock import MagicMock, patch
+
+        from agents.capture_agent import capture_agent
+
+        mock_concept = MagicMock()
+        mock_concept.id = 42
+        mock_concept.term = "agentic chat"
+
+        with (
+            patch(
+                "agents.capture_agent._check_spelling",
+                return_value={"has_typo": False, "suggested": None},
+            ),
+            patch(
+                "agents.capture_agent._is_ambiguous",
+                return_value={"ambiguous": False, "meanings": []},
+            ),
+            patch("agents.capture_agent.save_concept", return_value=mock_concept),
+            patch(
+                "agents.capture_agent.get_all_concepts",
+                return_value=[mock_concept],
+            ),
+        ):
+            result = capture_agent(self._base_state("agentic chat"))
+
+        assert result.get("mode") == "capture"
+        assert result.get("current_concept") is mock_concept
+
+    def test_buenos_dias_still_treated_as_chaff(self):
+        """Saludo de dos palabras cortas no debe confundirse con término técnico."""
+        from agents.capture_agent import _is_conversational_chaff_for_capture
+
+        assert _is_conversational_chaff_for_capture("buenos dias")
+
+
 # ── Cleanup ───────────────────────────────────────────────────────────────────
 
 def teardown_module(module):  # noqa: ARG001
