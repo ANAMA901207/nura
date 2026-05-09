@@ -478,23 +478,32 @@ _KNOWN_TECH_TOOLS: frozenset[str] = frozenset({
     "cursor", "vs code", "vscode", "replit",
     # Control de versiones y colaboración
     "github", "gitlab", "linear", "notion", "slack",
+    "git",
     # Plataformas cloud / infraestructura
     "docker", "kubernetes", "terraform", "aws", "gcp", "azure",
     "supabase", "vercel",
+    "ssh", "tcp", "udp", "dns", "ssl", "tls", "cdn",
     # Frameworks y librerías de IA / ML
     "langgraph", "langchain", "hugging face", "huggingface",
     # Modelos de IA y asistentes
     "gemini", "chatgpt", "claude", "perplexity", "antigravity", "openclaw",
     # Herramientas de diseño y API
     "figma", "postman",
+    "api", "sdk",
     # Frameworks web / backend
     "streamlit", "react", "nextjs", "vue", "angular",
     "fastapi", "flask", "django",
+    "css", "html", "dom", "mvc",
     # Bases de datos
     "postgresql", "sqlite", "redis", "mongodb", "graphql",
+    "sql", "orm",
     # Lenguajes de programación
     "python", "javascript", "typescript", "java", "rust", "go", "kotlin",
     "swift",
+    # Herramientas / paquetes
+    "npm", "pip", "cli", "ide",
+    # Identificadores/formatos comunes
+    "url", "uri", "jwt",
 })
 
 

@@ -978,17 +978,18 @@ def _render_view_descubrir() -> None:
                 # Sprint 29: simplificar explicación del tutor
                 if mode in ("question", "chat") and response_text.strip():
                     _simp_key = f"simplified_txt_{hist_idx}"
-                    if st.button(
-                        "🔄 Explícame más simple",
-                        key=f"simplify_btn_{hist_idx}",
-                    ):
-                        from agents.tutor_agent import simplify_explanation
-                        with st.spinner("Simplificando..."):
-                            st.session_state[_simp_key] = simplify_explanation(
-                                response_text,
-                                st.session_state.get("user_profile", {}),
-                            )
-                        st.rerun()
+                    if len(response_text) > 50 and "Estoy aquí para ayudarte" not in response_text:
+                        if st.button(
+                            "🔄 Explícame más simple",
+                            key=f"simplify_btn_{hist_idx}",
+                        ):
+                            from agents.tutor_agent import simplify_explanation
+                            with st.spinner("Simplificando..."):
+                                st.session_state[_simp_key] = simplify_explanation(
+                                    response_text,
+                                    st.session_state.get("user_profile", {}),
+                                )
+                            st.rerun()
                     _simp_out = st.session_state.get(_simp_key)
                     if _simp_out:
                         st.markdown(
