@@ -1943,7 +1943,11 @@ def _render_view_conectar() -> None:
     # ── Sprint 28: toggle Mapa / Árbol ───────────────────────────────────────
     _vista_mode = st.radio(
         "Vista",
-        options=["🔗 Mapa de conexiones", "🌳 Árbol jerárquico"],
+        options=[
+            "🔗 Mapa de conexiones",
+            "🌳 Árbol jerárquico",
+            "🗺️ Árbol visual",
+        ],
         horizontal=True,
         label_visibility="collapsed",
         key="conectar_vista_mode",
@@ -1954,6 +1958,17 @@ def _render_view_conectar() -> None:
         from ui.components import render_tree
         _tree = get_concept_tree(uid)
         render_tree(_tree)
+        return
+
+    if _vista_mode == "🗺️ Árbol visual":
+        import streamlit.components.v1 as components
+
+        from db.operations import get_concept_tree
+        from ui.components import render_hierarchy_svg
+
+        _tree_svg = get_concept_tree(uid)
+        _svg = render_hierarchy_svg(_tree_svg)
+        components.html(_svg, height=600, scrolling=True)
         return
 
     # ── Selectbox de filtro rápido — encima del mapa ─────────────────────────

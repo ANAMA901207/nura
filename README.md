@@ -2,7 +2,7 @@
 
 Nura es una aplicación de aprendizaje adaptativo con memoria persistente y multi-usuario. Captura términos que el usuario quiere aprender, los clasifica automáticamente con Gemini, construye un grafo de conocimiento entre conceptos, actúa como tutor conversacional personalizado y programa repasos mediante el algoritmo SM-2.
 
-> **Estado actual** — SQLite local para desarrollo y tests; PostgreSQL/Supabase en producción. Bot de Telegram opcional (webhook FastAPI), jerarquía de conceptos, examen de certificación por categoría, TTS y búsqueda web vía paquete `ddgs` (DuckDuckGo).
+> **Estado actual** — SQLite local para desarrollo y tests; PostgreSQL/Supabase en producción. Bot de Telegram opcional (webhook FastAPI): al arrancar y al invocar el tutor se llama `init_db()` para asegurar tablas y migraciones. Memoria conversacional (`conversation_history`) para contexto reciente del tutor. Jerarquía de conceptos, examen por categoría, TTS y búsqueda web vía `ddgs` (DuckDuckGo).
 
 ---
 
@@ -10,11 +10,11 @@ Nura es una aplicación de aprendizaje adaptativo con memoria persistente y mult
 
 | Módulo | Qué hace |
 |--------|----------|
-| **Captura** | Detecta modo: chat, término, pregunta, repaso, quiz, corrección ortográfica, ambigüedad, re-clasificación o búsqueda web antes de clasificar |
+| **Captura** | Detecta modo: chat, término, pregunta, repaso, quiz, corrección ortográfica, ambigüedad, re-clasificación o búsqueda web antes de clasificar. Frases de dos palabras con un token largo (≥7 letras, p. ej. `agentic chat`) o guiones bajos (`tasa_de_interes`) pasan heurísticas de término |
 | **Clasificador** | Enriquece cada término con categoría, explicación, analogía, ejemplo y flashcard vía Gemini |
-| **Conector** | Detecta y guarda vínculos semánticos entre el nuevo concepto y los anteriores |
+| **Conector** | Detecta y guarda vínculos semánticos entre el nuevo concepto y los anteriores; si la API de conexión falla, el pipeline continúa sin abortar |
 | **Jerarquía** | Tras clasificar, infiere relaciones padre/hijo (p. ej. «es tipo de») y las persiste en `concept_hierarchy` |
-| **Tutor** | Responde preguntas con el contexto personal del usuario, herramientas de BD/jerarquía, búsqueda web y analogías adaptadas al perfil |
+| **Tutor** | Responde con contexto personal, herramientas de BD/jerarquía, búsqueda web y perfil; incluye turnos recientes desde `conversation_history` y persiste cada interacción (user + Nura) |
 | **Repaso SM-2** | Programa flashcards con SuperMemo 2 según rendimiento histórico |
 | **Quiz adaptativo** | Genera preguntas de opción múltiple y ofrece explicación personalizada al fallar |
 | **Examen** | Certificación por categoría (UI «Dominar» y bot Telegram `/examen`) con evaluación agregada |
@@ -26,7 +26,7 @@ Nura es una aplicación de aprendizaje adaptativo con memoria persistente y mult
 | **Progreso** | Gráficos de actividad con `pandas` / Streamlit (Sprint 31) |
 | **Autenticación** | Registro y login con bcrypt; cada usuario tiene su propio espacio de datos |
 | **Onboarding** | Profesión, área de aprendizaje y nivel técnico; meta diaria de conceptos y hora de recordatorio |
-| **Telegram** | Captura y tutor por chat; recordatorios programados; TTS opcional (`gTTS` + `pydub`; voz OGG requiere **ffmpeg** en el servidor) |
+| **Telegram** | Captura y tutor por chat; saludos cortos con pendientes de repaso hoy; mensaje extra en captura si hay conexión en BD; recordatorios; TTS opcional (`gTTS` + `pydub`; OGG requiere **ffmpeg**) |
 
 ---
 
@@ -72,7 +72,7 @@ nura/
 │   ├── app.py                # Aplicación Streamlit principal
 │   ├── components.py         # Cards, mapa, flashcards, examen…
 │   └── auth.py               # Login / registro / onboarding
-├── tests/                    # ~363 tests — mayoría deterministas; test_sprint4 usa Gemini real si hay API key
+├── tests/                    # ~390 tests — mayoría deterministas; integración Gemini puede skippear si no hay clave o cuota
 ├── docs/                     # Specs y cierres de sprints
 ├── design/                   # Favicon y assets
 ├── .streamlit/config.toml    # Tema oscuro Catppuccin Mocha
@@ -174,7 +174,7 @@ Nura selecciona el motor automáticamente según el entorno:
 | `DATABASE_URL` en `.env` | PostgreSQL (Supabase) | Producción / multi-dispositivo |
 | Sin `DATABASE_URL` | SQLite (`db/nura.db`) | Desarrollo local y tests |
 
-El esquema y las operaciones CRUD son idénticos en ambos motores salvo detalles internos de placeholders. Al conectar a Supabase por primera vez, `init_db()` crea las tablas necesarias (incluidas jerarquía, vinculación Telegram, sesiones de examen, etc.).
+El esquema y las operaciones CRUD son idénticos en ambos motores salvo detalles internos de placeholders. Al conectar a Supabase por primera vez, `init_db()` crea las tablas necesarias (incluidas jerarquía, vinculación Telegram, sesiones de examen, historial de conversación del tutor, etc.). La app Streamlit y el bot FastAPI invocan `init_db()` al inicio; `nura_bridge.run_tutor` / `run_review` también lo hacen por si el bot se usa sin pasar por Streamlit.
 
 ---
 
@@ -184,7 +184,7 @@ El esquema y las operaciones CRUD son idénticos en ambos motores salvo detalles
 
 **Descubrir** — Chat de captura y tutor:
 
-- Escribe un término (`tasa de interés`) → Nura lo guarda, clasifica, conecta y puede inferir jerarquía.
+- Escribe un término (p. ej. una palabra larga, `tasa_de_interes` o `agentic chat`) → Nura lo guarda, clasifica, conecta y puede inferir jerarquía. Frases muy cortas de palabras comunes sin señal técnica pueden ir a modo chat.
 - Saludos o frases cortas → modo **chat** (respuesta breve del tutor sin tocar la BD).
 - Pregunta con `?` o interrogativas → el tutor responde con contexto y herramientas.
 - Nura detecta términos técnicos nuevos en la respuesta y te ofrece guardarlos.
@@ -229,7 +229,7 @@ Usuario escribe input
 python -m pytest tests/ -v --tb=short -q
 ```
 
-Los tests usan SQLite en memoria o temporales; no deben tocar la BD de producción. El conteo de tests crece con los sprints (del orden de **~363** al momento de escribir este README).
+Los tests usan SQLite en memoria o temporales; no deben tocar la BD de producción. El conteo crece con los sprints (del orden de **~390** tests; algunos de integración con Gemini pueden figurar como *skipped* sin clave válida).
 
 ---
 
@@ -254,6 +254,9 @@ concept_hierarchy (tabla)
 
 DailySummary  (UNIQUE: date + user_id)
   concepts_captured, new_connections, concepts_reviewed, …
+
+conversation_history
+  user_id → User, role (user | nura), content, created_at — memoria reciente del tutor
 ```
 
 ---
@@ -285,3 +288,5 @@ DailySummary  (UNIQUE: date + user_id)
 - **`ClassificationError`**: fallos de API dejan el concepto con `is_classified=False` para reintento.
 - **Streamlit `st.cache_resource`**: el grafo LangGraph se construye una vez por proceso.
 - **Webhook Telegram**: respuesta HTTP inmediata y procesamiento en segundo plano para evitar reintentos en bucle por timeout de Telegram.
+- **`init_db()` idempotente** en arranque del bot y en el puente al tutor/repaso para que el esquema exista aunque no se haya abierto la UI antes.
+- **Memoria conversacional**: turnos user/Nura en BD para enriquecer el prompt del tutor sin acoplar formato de salida en código.

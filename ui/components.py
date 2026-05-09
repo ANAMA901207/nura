@@ -14,6 +14,8 @@ Convencion de retorno
 - render_flashcard()       → str   (HTML listo para st.markdown o st.html)
 - render_knowledge_map()   → str   (HTML completo de pyvis)
 - render_daily_summary()   → None  (escribe en Streamlit directamente)
+- render_hierarchy_svg()   → str   (SVG puro del árbol jerárquico, Sprint 36)
+- render_concept_hierarchy_mini() → None (mini-árbol o caption en cards Dominar)
 """
 
 from __future__ import annotations
@@ -220,6 +222,15 @@ def render_concept_card(
                     f"</div>",
                     unsafe_allow_html=True,
                 )
+
+    if show_actions:
+        st.markdown(
+            "<p style='color:#cdd6f4; font-size:0.85rem; font-weight:600; "
+            "margin:1rem 0 0.35rem 0;'>📍 Dónde encaja</p>",
+            unsafe_allow_html=True,
+        )
+        _uid_card = int(getattr(concept, "user_id", 1) or 1)
+        render_concept_hierarchy_mini(_uid_card, int(concept.id))
 
     # Barra de dominio
     if concept.mastery_level > 0:
@@ -1383,3 +1394,227 @@ def render_activity_heatmap(activity_data: list[dict]) -> None:
         return
     chart_df = df.set_index("date")[["count"]].rename(columns={"count": "Conceptos capturados"})
     st.bar_chart(chart_df)
+
+
+# ── Sprint 36: árbol jerárquico como SVG ───────────────────────────────────────
+
+_HIER_ROOT = "#185FA5"
+_HIER_L1 = "#0F6E56"
+_HIER_LEAF = "#5F5E5A"
+_HIER_HIGHLIGHT = "#534AB7"
+_HIER_W = 680
+
+
+def _hier_node_color(level: int, is_highlight: bool) -> tuple[str, str]:
+    """(fill, stroke) para rect de nodo."""
+    if is_highlight:
+        return _HIER_HIGHLIGHT, "#7c6cde"
+    if level == 0:
+        return _HIER_ROOT, "#3d7bc4"
+    if level == 1:
+        return _HIER_L1, "#0d8a6a"
+    return _HIER_LEAF, "#454545"
+
+
+def _hier_node_box_w(term: str) -> float:
+    return float(max(88, min(220, len(term) * 8 + 36)))
+
+
+def _layout_hierarchy_tree(
+    tree: dict,
+    *,
+    canvas_w: float = float(_HIER_W),
+    top_y: float = 52.0,
+    v_gap: float = 92.0,
+) -> tuple[dict[str, dict[str, float | int]], list[tuple[str, str]], float]:
+    """
+    Asigna posiciones top-down por subárbol (reparto horizontal proporcional).
+
+    Devuelve
+    --------
+    nodes   : term -> {cx, cy, level, w, h}
+    edges   : lista (parent_term, child_term)
+    height  : alto total del dibujo
+    """
+    nodes: dict[str, dict[str, float | int]] = {}
+    edges: list[tuple[str, str]] = []
+
+    def measure(term: str, node: dict) -> float:
+        ch = node.get("children") or {}
+        my_w = _hier_node_box_w(term)
+        if not ch:
+            return max(my_w, 1.0)
+        total = 0.0
+        for ct, cdata in ch.items():
+            if isinstance(cdata, dict):
+                total += measure(ct, cdata) + 16.0
+        return max(my_w, total - 16.0 if total else my_w)
+
+    def place(
+        term: str,
+        node: dict,
+        x0: float,
+        x1: float,
+        y: float,
+        level: int,
+    ) -> None:
+        cx = (x0 + x1) / 2.0
+        w = _hier_node_box_w(term)
+        h = 40.0
+        nodes[term] = {"cx": cx, "cy": y, "level": level, "w": w, "h": h}
+        children = [(ct, cd) for ct, cd in (node.get("children") or {}).items() if isinstance(cd, dict)]
+        if not children:
+            return
+        weights = [measure(ct, cd) for ct, cd in children]
+        s = sum(weights) or 1.0
+        span = x1 - x0
+        cur = x0
+        for (ct, cdata), wt in zip(children, weights):
+            seg = span * (wt / s)
+            edges.append((term, ct))
+            place(ct, cdata, cur, cur + seg, y + v_gap, level + 1)
+            cur += seg
+
+    roots = [(t, n) for t, n in tree.items() if isinstance(n, dict)]
+    if not roots:
+        return nodes, edges, top_y + 80.0
+
+    usable = canvas_w - 32.0
+    nroots = len(roots)
+    slice_w = usable / max(nroots, 1)
+    for i, (rt, rn) in enumerate(roots):
+        x0 = 16.0 + i * slice_w
+        x1 = x0 + slice_w
+        place(rt, rn, x0, x1, top_y, 0)
+
+    max_bottom = top_y + 40.0
+    for info in nodes.values():
+        cy = float(info["cy"])
+        h = float(info["h"])
+        max_bottom = max(max_bottom, cy + h / 2.0 + 28.0)
+
+    return nodes, edges, max_bottom + 36.0
+
+
+def render_hierarchy_svg(
+    tree: dict,
+    highlighted_id: int | None = None,
+    *,
+    user_id: int | None = None,
+) -> str:
+    """
+    Genera SVG top-down del árbol devuelto por ``get_concept_tree(user_id)``.
+
+    Parámetros
+    ----------
+    tree            : Dict anidado ``term -> {children: ...}``.
+    highlighted_id  : Si se pasa junto con ``user_id``, el nodo del concepto se
+                      resalta en púrpura y se muestra «← estás aquí».
+    user_id         : Necesario para resolver ``highlighted_id`` → término.
+
+    Devuelve
+    --------
+    str con documento SVG completo (ancho fijo 680 px).
+    """
+    highlight_term: str | None = None
+    if highlighted_id is not None and user_id is not None:
+        try:
+            from db.operations import get_concept_by_id
+
+            hc = get_concept_by_id(int(highlighted_id), user_id=int(user_id))
+            highlight_term = hc.term if hc else None
+        except ValueError:
+            highlight_term = None
+
+    if not tree:
+        h = 120.0
+        return (
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="{_HIER_W}" height="{h:.0f}" '
+            f'viewBox="0 0 {_HIER_W} {h:.0f}">'
+            f'<rect width="100%" height="100%" fill="#1e1e2e"/>'
+            f'<text x="{_HIER_W / 2:.1f}" y="{h / 2:.1f}" text-anchor="middle" '
+            f'fill="#a6adc8" font-size="15" font-family="system-ui,sans-serif">'
+            f"{_html.escape('Sin jerarquía registrada')}</text></svg>"
+        )
+
+    nodes, edges, total_h = _layout_hierarchy_tree(tree)
+
+    parts: list[str] = [
+        "<defs>",
+        '<marker id="hierArrow" markerWidth="10" markerHeight="10" refX="9" refY="3" '
+        'orient="auto"><polygon points="0 0, 10 3, 0 6" fill="#89b4fa"/></marker>',
+        "</defs>",
+        f'<rect width="100%" height="100%" fill="#1e1e2e"/>',
+    ]
+
+    for p_term, c_term in edges:
+        pa = nodes.get(p_term)
+        ca = nodes.get(c_term)
+        if not pa or not ca:
+            continue
+        px, py, pw, ph = float(pa["cx"]), float(pa["cy"]), float(pa["w"]), float(pa["h"])
+        cx, cy, cw, ch = float(ca["cx"]), float(ca["cy"]), float(ca["w"]), float(ca["h"])
+        x1, y1 = px, py + ph / 2.0 + 2.0
+        x2, y2 = cx, cy - ch / 2.0 - 2.0
+        parts.append(
+            f'<line x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" '
+            'stroke="#89b4fa" stroke-width="2" marker-end="url(#hierArrow)"/>'
+        )
+
+    for term, info in nodes.items():
+        cx, cy = float(info["cx"]), float(info["cy"])
+        w, h = float(info["w"]), float(info["h"])
+        lev = int(info["level"])
+        is_hi = highlight_term is not None and term == highlight_term
+        fill, stroke = _hier_node_color(lev, is_hi)
+        x = cx - w / 2.0
+        y = cy - h / 2.0
+        parts.append(
+            f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h:.1f}" rx="8" '
+            f'fill="{fill}" stroke="{stroke}" stroke-width="2"/>'
+        )
+        parts.append(
+            f'<text x="{cx:.1f}" y="{cy + 5:.1f}" text-anchor="middle" fill="#ffffff" '
+            f'font-size="13" font-family="system-ui,sans-serif" font-weight="500">'
+            f"{_html.escape(term)}</text>"
+        )
+        if is_hi:
+            parts.append(
+                f'<text x="{cx + w / 2.0 + 10:.1f}" y="{cy + 5:.1f}" fill="#cba6f7" '
+                f'font-size="12" font-family="system-ui,sans-serif">'
+                f"{_html.escape('← estás aquí')}</text>"
+            )
+
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{_HIER_W}" '
+        f'height="{total_h:.0f}" viewBox="0 0 {_HIER_W} {total_h:.0f}">'
+        + "".join(parts)
+        + "</svg>"
+    )
+
+
+def render_concept_hierarchy_mini(user_id: int, concept_id: int) -> None:
+    """
+    Mini vista de jerarquía en cards (Dominar) o solo categoría si no hay vínculos.
+    """
+    import streamlit as st
+    import streamlit.components.v1 as components
+
+    from db.operations import get_concept_by_id, get_concept_tree, get_hierarchy
+
+    hrels = get_hierarchy(user_id)
+    involved = any(
+        r["child_id"] == concept_id or r["parent_id"] == concept_id for r in hrels
+    )
+    if not involved:
+        try:
+            c = get_concept_by_id(concept_id, user_id=user_id)
+            cat = (c.category or "Sin categoría") if c else "Sin categoría"
+        except ValueError:
+            cat = "Sin categoría"
+        st.caption(f"📍 Categoría: {_html.escape(cat)}")
+        return
+
+    tree = get_concept_tree(user_id)
+    svg = render_hierarchy_svg(tree, highlighted_id=concept_id, user_id=user_id)
+    components.html(svg, height=200, scrolling=False)
